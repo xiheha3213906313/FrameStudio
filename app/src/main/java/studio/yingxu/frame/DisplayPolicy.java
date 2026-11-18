@@ -17,8 +17,8 @@ final class DisplayPolicy {
                 && mode.getRefreshRate()>fastest.getRefreshRate())fastest=mode;
         }
         WindowManager.LayoutParams params=activity.getWindow().getAttributes();
-        params.preferredRefreshRate=fastest.getRefreshRate();
+        params.preferredDisplayModeId=fastest.getModeId();
         activity.getWindow().setAttributes(params);
-        if(Build.VERSION.SDK_INT>=35)content.setRequestedFrameRate(View.REQUESTED_FRAME_RATE_CATEGORY_HIGH);
+        if(Build.VERSION.SDK_INT>=35)content.setRequestedFrameRate(fastest.getRefreshRate());
     }
 }

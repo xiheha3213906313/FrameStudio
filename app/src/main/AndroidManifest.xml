@@ -11,7 +11,7 @@
         <activity android:name=".MainActivity" android:exported="true" android:windowSoftInputMode="adjustResize">
             <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
         </activity>
-        <activity android:name=".AlbumActivity" android:exported="false" android:label="选择参考图"/>
+        <activity android:name=".AlbumActivity" android:exported="false" android:label="选择参考图" android:theme="@style/AlbumTheme"/>
         <service android:name=".ImageService" android:exported="false" android:foregroundServiceType="dataSync"/>
         <service android:name=".ModelSync" android:permission="android.permission.BIND_JOB_SERVICE" android:exported="true"/>
         <provider android:name=".PictureProvider" android:authorities="studio.yingxu.frame.pictures" android:exported="false" android:grantUriPermissions="true"/>

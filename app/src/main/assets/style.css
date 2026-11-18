@@ -91,8 +91,8 @@ button{transition:background-color .15s ease,opacity .15s ease,border-color .15s
 #shell{padding-top:var(--status-inset)}
 #statusFill{position:fixed;top:0;left:0;right:0;height:var(--status-inset);background:var(--paper);z-index:4;pointer-events:none}
 #sheet{max-height:min(88vh,calc(100vh - var(--status-inset) - 10px))}
-.taskcard{padding:8px 10px;gap:8px}
-.tasklead{display:flex;flex-direction:column;align-items:center;justify-content:center;flex:none;width:63px;gap:4px}
+.taskcard{padding:8px 10px 8px 7px;gap:6px}
+.tasklead{display:flex;flex-direction:column;align-items:center;justify-content:center;flex:none;min-width:60px;gap:4px}
 .tasklead .tile{width:44px;height:41px;margin:0}
 .tasklead .badge{display:block;text-align:center;line-height:1.15}
 .tasktext .task-model,.tasktext time{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -114,16 +114,18 @@ button{transition:background-color .15s ease,opacity .15s ease,border-color .15s
 }
 @media(prefers-reduced-motion:reduce){.nav-count{transition:none}}
 
-.tasklead{width:76px}
 .tasklead .badge{white-space:nowrap}
 .tasklead .badge>span{display:block}
 .task-media{
  display:flex;align-items:stretch;overflow-x:auto;overscroll-behavior-x:contain;
- gap:12px;padding:3px 0 9px;scrollbar-width:thin
+ gap:25px;padding:3px 0 9px;scrollbar-width:thin
 }
-.task-media-group{flex:none;min-width:76px}
-.task-media-group + .task-media-group{border-left:1px solid var(--line);padding-left:12px}
-.task-media-items{display:flex;align-items:center;gap:6px;margin-top:8px}
+.task-media-group{flex:none}
+.task-media-group h3{width:0;min-width:100%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.task-media-items{position:relative;display:flex;align-items:center;gap:6px;margin-top:8px}
+.task-media-group + .task-media-group .task-media-items::before{
+ content:"";position:absolute;top:0;bottom:0;left:-13px;width:1px;background:var(--line)
+}
 .task-media-items button,.task-media-empty{flex:none;width:74px;height:74px;border-radius:8px}
 .task-media-items img{display:block;width:100%;height:100%;object-fit:cover;border-radius:8px}
 .task-media-empty{display:grid;place-items:center;background:#efeee7;color:var(--muted);font-size:13px}
