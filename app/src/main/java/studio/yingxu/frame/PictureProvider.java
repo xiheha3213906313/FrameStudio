@@ -7,6 +7,7 @@ import android.net.Uri;
 import android.os.ParcelFileDescriptor;
 import android.provider.OpenableColumns;
 import java.io.*;
+import java.util.List;
 
 public class PictureProvider extends ContentProvider {
     static String mime(File file) {
@@ -25,7 +26,26 @@ public class PictureProvider extends ContentProvider {
             if(!bitmap.compress(Bitmap.CompressFormat.JPEG,84,out)) throw new IOException("缩略图保存失败");
         } finally {bitmap.recycle();}
     }
+    private static final String AUTHORITY="studio.yingxu.frame.pictures";
+    static boolean isCapture(Uri uri) {
+        if(uri==null||!AUTHORITY.equals(uri.getAuthority()))return false;
+        List<String> path=uri.getPathSegments();
+        return path.size()==2&&"capture".equals(path.get(0))&&path.get(1).matches("[a-f0-9-]{36}[.]jpg");
+    }
+    static File captureFile(Context context,Uri uri) {
+        if(!isCapture(uri))throw new IllegalArgumentException("无效的拍照文件");
+        return new File(new File(context.getCacheDir(),"captures"),uri.getLastPathSegment());
+    }
+    static Uri createCapture(Context context) throws IOException {
+        File directory=new File(context.getCacheDir(),"captures");
+        if(!directory.isDirectory()&&!directory.mkdirs())throw new IOException("无法创建拍照目录");
+        Uri uri=new Uri.Builder().scheme("content").authority(AUTHORITY).appendPath("capture")
+            .appendPath(Studio.id()+".jpg").build();
+        if(!captureFile(context,uri).createNewFile())throw new IOException("无法创建拍照文件");
+        return uri;
+    }
     File image(Uri uri) {
+        if(isCapture(uri))return captureFile(getContext(),uri);
         String name=uri.getLastPathSegment();
         if(!Studio.safe(name)) throw new IllegalArgumentException();
         return new File(new File(getContext().getFilesDir(),"images"),name);
@@ -34,6 +54,11 @@ public class PictureProvider extends ContentProvider {
     @Override public boolean onCreate(){return true;}
     @Override public String getType(Uri uri){return mime(image(uri));}
     @Override public ParcelFileDescriptor openFile(Uri uri,String mode) throws FileNotFoundException {
+        if(isCapture(uri)) {
+            File file=captureFile(getContext(),uri);
+            if(!file.isFile())throw new FileNotFoundException();
+            return ParcelFileDescriptor.open(file,ParcelFileDescriptor.parseMode(mode));
+        }
         if(!"r".equals(mode)) throw new FileNotFoundException();
         return ParcelFileDescriptor.open(image(uri),ParcelFileDescriptor.MODE_READ_ONLY);
     }

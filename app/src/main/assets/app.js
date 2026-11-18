@@ -141,7 +141,7 @@ function hero(){
  return '<div class="hero"><img src="art/'+s.img+'.jpg" alt="'+e(s.title)+'"><div class="hero-top"><span class="feature-label">'+icon('book')+'提示词灵感</span><div class="dots">'+samples.map((x,i)=>button('slide','',i===sampleIndex?'sel':'',i,'aria-label="查看'+e(x.title)+'"')).join('')+'</div></div><div class="hero-bottom"><div><h2>'+e(s.title)+'</h2><p>'+e(s.style)+'</p></div>'+button('sample',icon('upRight'),'circle',sampleIndex,'aria-label="查看并使用提示词"')+'</div></div>';
 }
 function refstrip(){
- return '<div class="refstrip">'+draft.refs.map((r,i)=>'<div class="refitem">'+button('refPhoto','<img src="refs/'+e(r)+'.thumb" alt="参考图 '+(i+1)+'">','ref-preview',r)+button('unref','×','ref-remove',i,'aria-label="移除参考图"')+'</div>').join('')+(draft.refs.length<allowedRefs()?button('pick',icon('plus')+'<span class="ref-label">参考图</span>','refslot')+button('pickLocal','更多相册','textbtn ref-albums'):'')+'</div>';
+ return '<div class="refstrip">'+draft.refs.map((r,i)=>'<div class="refitem">'+button('refPhoto','<img src="refs/'+e(r)+'.thumb" alt="参考图 '+(i+1)+'">','ref-preview',r)+button('unref','×','ref-remove',i,'aria-label="移除参考图"')+'</div>').join('')+(draft.refs.length<allowedRefs()?button('pick',icon('plus')+'<span class="ref-label">参考图</span>','refslot'):'')+'</div>';
 }
 function createPage(){
  normalize();const b=body(),total=cost(b,null);
@@ -166,7 +166,7 @@ function galleryPage(){
  const all=photos(),list=galleryPhotos(all);
  return title('作品集','<span class="micro">'+list.length+' 张原图</span>')+modelFilters(all.map(x=>x.j),galleryModel,'galleryModel')+
  (list.length?'<div class="gallery">'+list.map(x=>button('photo',(!x.p.seen?'<span class="unseen-dot" aria-label="未查看"></span>':'')+
- '<img loading="lazy" src="images/'+e(x.p.file)+'.thumb" alt="作品预览"><b>'+e(x.j.body.prompt||'图层拆分')+'</b>','photo',x.p.file)).join('')+'</div>':
+ '<img loading="lazy" src="images/'+e(x.p.file)+'.thumb" alt="作品预览"><b>'+e(x.j.body.prompt||'图层拆分')+'</b>','photo'+(x.p.file===highlightedFile?' return-highlight':''),x.p.file)).join('')+'</div>':
  empty('gallery',all.length?'这个模型暂无作品':'作品集还是空的','生成成功的图片会自动保存在这里。'));
 }
 const failedStates=['failed','not_sent','uncertain','download_error'];
@@ -177,11 +177,17 @@ function taskThumb(job) {
  if(ref&&failedStates.includes(job.state))return '<img src="refs/'+e(ref)+'.thumb" alt="首张输入参考图">';
  return image?'<img src="images/'+e(image.file)+'.thumb" alt="生成图片">':icon('frame');
 }
+function statusLabel(status) {
+ const chars=Array.from(status||'');
+ const middle=Math.ceil(chars.length/2);
+ if(chars.length<=5)return e(status);
+ return '<span>'+e(chars.slice(0,middle).join(''))+'</span><span>'+e(chars.slice(middle).join(''))+'</span>';
+}
 function taskCard(j){
  const chosen=pickedTasks.has(j.id);
  const phase=j.result.phase;
  const status=j.state==='sending'?(phase==='connecting'?'连接中':phase==='uploading'?'上传中':'等待方舟出图'):stateNames[j.state];
- const label='<span class="badge '+(failedStates.includes(j.state)?'warn':'')+'">'+e(status)+'</span>';
+ const label='<span class="badge '+(failedStates.includes(j.state)?'warn':'')+'">'+statusLabel(status)+'</span>';
  return button('task','<span class="tasklead"><span class="tile">'+taskThumb(j)+'</span>'+label+'</span>'+
  '<span class="tasktext"><b>'+e(j.body.prompt||'图层拆分')+'</b><small class="sub task-model">'+e(j.body.name)+'</small>'+
  '<time class="sub" datetime="'+new Date(j.created).toISOString()+'">'+e(date(j.created))+'</time></span>'+
@@ -216,7 +222,7 @@ function stackCard(stack) {
  const ref=first.body.refs&&first.body.refs[0];
  const thumb=ref?'<img src="refs/'+e(ref)+'.thumb" alt="">':icon('layers');
  const toggle=button('taskStack','<span class="tasklead"><span class="tile">'+thumb+'</span><span class="badge warn">'+
-  stack.length+' 条失败</span></span><span class="tasktext"><b>'+e(first.body.prompt||'图层拆分')+'</b>'+
+  stack.length+'条失败</span></span><span class="tasktext"><b>'+e(first.body.prompt||'图层拆分')+'</b>'+
   '<time class="sub" datetime="'+new Date(first.created).toISOString()+'">'+e(date(first.created))+'</time></span>'+
   icon(selecting?(allSelected?'check':'frame'):(shown?'down':'next')),'taskcard stack-toggle'+(someSelected?' selected':''),first.id,label);
  return '<div class="task-stack'+(shown?' expanded':'')+'">'+toggle+
@@ -237,7 +243,7 @@ function settingsPage(){return title('设置')+'<div class="section-title"><h2>�
  row('custom','自定义推理接入点','添加 Endpoint ID 或新的 Model ID')+'<div class="section-title"><h2>使用与计费</h2></div>'+
  row('ledger','本机费用统计','按任务提交时的单价快照汇总')+row('doc','官方模型价格','查看火山方舟最新公布的计费规则','docs/model-pricing')+
  row('doc','错误码手册','按错误码排查权限、配额、请求参数等问题','docs/error-codes')+row('doc','图片生成指南','查看模型能力、参考图限制和调用示例','docs/image-generation-tutorial')+
- '<div class="panel"><h3>映序 · Frame Studio</h3><p class="sub">版本 1.4 · 火山方舟北京地域，标准按量 API。图片和任务记录保存在此设备。</p></div>';}
+ '<div class="panel"><h3>映序 · Frame Studio</h3><p class="sub">版本 1.5 · 火山方舟北京地域，标准按量 API。图片和任务记录保存在此设备。</p></div>';}
 function animateIn(element) {
  if(!element.animate || matchMedia('(prefers-reduced-motion: reduce)').matches)return;
  const animation=element.animate([{opacity:0,transform:'translateY(9px)'},{opacity:1,transform:'translateY(0)'}],
@@ -278,11 +284,13 @@ function show(type,val){
 function close(){
  const overlay=$('#overlay');
  if(!modal)return;
+ const returnFile=modal==='photo'&&page==='gallery'&&!previousPhotoTask?context:'';
  window.blurInputs();
  modal='';context='';
  overlay.classList.remove('is-visible');
  function finish(){
   overlay.hidden=true;document.body.style.overflow='';
+  if(returnFile)revealGalleryPhoto(returnFile);
   scheduleSeen();
  }
  if(matchMedia('(prefers-reduced-motion: reduce)').matches)finish();
@@ -335,12 +343,15 @@ function lines(b,r){const c=cost(b,r);return entry('参考图费用',c?money(c.i
 function taskSheet(j){
  if(!j)return '<p>记录已删除。</p>';
  const b=j.body,r=j.result,done=['done','partial','download_error','fetching'].includes(j.state),images=r.images||[];
- let info=entry('状态',stateNames[j.state])+entry('创建时间',date(j.created))+entry('模型',b.model)+entry('请求尺寸',b.layers?b.level:b.size||'默认');
- const references=b.refs||[];
- if(references.length){
-  info+='<section class="task-references"><h3>输入参考图</h3><div class="thumbs">'+references.map((ref,index)=>
-   button('taskRef','<img src="refs/'+e(ref)+'.thumb" alt="输入参考图 '+(index+1)+'">','',ref)).join('')+'</div></section>';
- }else info+=entry('输入参考图','无');
+ const inputs=(b.refs||[]).map((ref,index)=>
+  button('taskRef','<img src="refs/'+e(ref)+'.thumb" alt="输入图片 '+(index+1)+'">','',ref));
+ const outputs=images.filter(item=>item.ready).map((item,index)=>
+  button('photo','<img src="images/'+e(item.file)+'.thumb" alt="输出图片 '+(index+1)+'">','',item.file));
+ const mediaGroup=(label,items)=>'<section class="task-media-group"><h3>'+label+'</h3><div class="task-media-items">'+
+  (items.length?items.join(''):'<span class="task-media-empty">无</span>')+'</div></section>';
+ let info='<div class="task-media" aria-label="输入和输出图片">'+mediaGroup('输入图片',inputs)+mediaGroup('输出图片',outputs)+'</div>'+
+  '<section class="task-prompt"><h3>提示词</h3><p class="summary">'+e(b.prompt||'按图片内容自动拆分图层')+'</p></section>'+
+  entry('状态',stateNames[j.state])+entry('创建时间',date(j.created))+entry('模型',b.model)+entry('请求尺寸',b.layers?b.level:b.size||'默认');
  if(r.trace)info+=entry('方舟 Request ID',r.trace);
  if(r.httpStatus)info+=entry('HTTP 状态',r.httpStatus);
  if(j.state==='not_sent')info+='<p class="notice">本次生成请求体尚未发送，因此这条任务没有提交生图。</p>';
@@ -356,7 +367,7 @@ function taskSheet(j){
  if(r.message)info+='<p class="problem">'+e(r.message)+'</p>';
  (r.errors||[]).concat(images.filter(p=>p.downloadError).map(p=>p.downloadError)).forEach(err=>{info+='<p class="problem">'+e(err)+'</p>';});
  if(r.incomplete)info+=entry('费用','仅收到部分响应，请以方舟账单为准');else if(done||r.usage)info+=lines(b,r);else if(['cancelled','not_sent'].includes(j.state))info+=entry('费用','¥0.00');else info+=entry('提交前估算',money((cost(b,null)||{}).total));
- info+='<p class="summary">'+e(b.prompt||'按图片内容自动拆分图层')+'</p><div class="thumbs">'+images.filter(p=>p.ready).map(p=>button('photo','<img src="images/'+e(p.file)+'.thumb" alt="查看原图">','',p.file)).join('')+'</div><div class="buttons">';
+ info+='<div class="buttons">';
  if(j.state==='queued')info+=button('cancel','取消排队','secondary',j.id);
  if(j.state==='download_error')info+=button('recover','补下载原图','primary',j.id);
  if(!active(j.state))info+=button('reuse','复用参数','secondary',j.id)+button('deleteAsk','删除记录','dangerbtn',j.id);
@@ -392,7 +403,7 @@ function modalContent(){
  case 'photo':{
   const it=photos().find(x=>x.p.file===context);
   if(!it)return ['作品预览','原图不可用'];
-  return ['作品预览',imageViewer('images/'+context,'生成原图')+entry('尺寸',it.p.size)+entry('模型',it.j.body.name)+
+  return ['作品预览',imageViewer('images/'+context,'生成原图',photoNeighbors())+entry('尺寸',it.p.size)+entry('模型',it.j.body.name)+
    (it.p.name?entry('图层',it.p.name):'')+
    '<div class="buttons">'+button('editPhoto',icon('create')+'<span class="action-label">编辑图片</span>','primary',context)+
    button('save',icon('save')+'<span class="action-label">保存到相册</span>','primary',context)+
@@ -425,21 +436,39 @@ function renderModal(preserveScroll=true) {
  sheet.querySelector('.sheet-body').scrollTop=scroll;
  setupViewer(sheet.querySelector('.viewer'),modal==='photo'?slidePhoto:null);
 }
-function slidePhoto(direction) {
- if(modal!=='photo')return;
+function photoNeighbors() {
  const list=previousPhotoTask?photos().filter(item=>item.j.id===previousPhotoTask):galleryPhotos();
  const index=list.findIndex(item=>item.p.file===context);
- const next=index>=0?list[index+direction]:null;
+ const idAt=position=>index>=0&&list[position]?list[position].p.file:'';
+ return {previous:idAt(index-1),next:idAt(index+1)};
+}
+function slidePhoto(direction) {
+ if(modal!=='photo')return;
+ const adjacent=photoNeighbors();
+ const next=direction<0?adjacent.previous:adjacent.next;
  if(!next)return;
- context=next.p.file;
+ context=next;
  renderModal(false);
- const viewer=$('#sheet .viewer');
- if(viewer&&viewer.animate&&!matchMedia('(prefers-reduced-motion: reduce)').matches){
-  const anim=viewer.animate([{transform:'translateX('+(direction*20)+'px)',opacity:.65},{transform:'translateX(0)',opacity:1}],
-   {duration:175,easing:'ease-out'});
-  anim.onfinish=scheduleSeen;
- }
  scheduleSeen();
+}
+let highlightedFile='';
+let highlightTimer;
+function revealGalleryPhoto(file) {
+ const card=Array.from(document.querySelectorAll('.gallery .photo')).find(item=>item.dataset.val===file);
+ if(!card)return;
+ const bounds=card.getBoundingClientRect();
+ const top=$('#statusFill').getBoundingClientRect().bottom;
+ const bottom=$('#nav').getBoundingClientRect().top;
+ if(bounds.top<top||bounds.bottom>bottom)
+  window.scrollBy({top:(bounds.top+bounds.bottom-top-bottom)/2,behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth'});
+ document.querySelectorAll('.return-highlight').forEach(item=>item.classList.remove('return-highlight'));
+ highlightedFile=file;
+ card.classList.add('return-highlight');
+ clearTimeout(highlightTimer);
+ highlightTimer=setTimeout(()=>{
+  highlightedFile='';
+  document.querySelectorAll('.return-highlight').forEach(item=>item.classList.remove('return-highlight'));
+ },1900);
 }
 function redraw(){draw();if(modal)renderModal();saveDraft();}
 function feedback(err){if($('#formError')&&!$('#overlay').hidden)$('#formError').textContent=err.message;else toast(err.message);}
@@ -488,10 +517,13 @@ function checkVisiblePhotos(){
   right:frame?frame.offsetLeft+frame.width:innerWidth,bottom:frame?frame.offsetTop+frame.height:innerHeight};
  if(showingPhoto){
   const sheet=$('#sheet .sheet-body').getBoundingClientRect();
-  viewport.top=Math.max(viewport.top,sheet.top);
+  viewport.top=Math.max(viewport.top,sheet.top,$('#statusFill').getBoundingClientRect().bottom);
   viewport.bottom=Math.min(viewport.bottom,sheet.bottom);
- }else viewport.bottom=Math.min(viewport.bottom,$('#nav').getBoundingClientRect().top);
- const images=showingPhoto?document.querySelectorAll('#sheet .viewer img'):document.querySelectorAll('.photo .unseen-dot + img');
+ }else{
+  viewport.top=Math.max(viewport.top,$('#statusFill').getBoundingClientRect().bottom);
+  viewport.bottom=Math.min(viewport.bottom,$('#nav').getBoundingClientRect().top);
+ }
+ const images=showingPhoto?document.querySelectorAll('#sheet .viewer-current'):document.querySelectorAll('.photo .unseen-dot + img');
  const files=[];
  for(const image of images){
   const area=image.getBoundingClientRect();
@@ -669,9 +701,9 @@ async function act(a,v){
   const list=config.custom.filter(x=>x.id!==id).concat([{id:id,name:name,family:family,cents:fee?Math.round(Number(fee)*100):null}]);
   await api('custom',{list:list});config.custom=list;changeModel(id);toast('已保存并选用接入点');break;}
  case 'doRemove':{const list=config.custom.filter((_,i)=>i!==Number(v));await api('custom',{list:list});config.custom=list;if(!options().some(m=>m.id===draft.model))setDraftModel((options()[0]||{}).id||'');show('custom');redraw();break;}
- case 'pick':case 'pickLocal':
+ case 'pick':
   await api('draft',draft);
-  await api('pick',{limit:allowedRefs()-draft.refs.length,local:a==='pickLocal'});
+  await api('pick',{limit:allowedRefs()-draft.refs.length});
   break;
  case 'unref':draft.refs.splice(Number(v),1);redraw();break;
  case 'doc':await api('open',{page:v});break;

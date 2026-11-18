@@ -127,6 +127,10 @@ public class MainActivity extends Activity {
         }
         keyboardVisible=visible;
     }
+    @Override protected void onResume() {
+        super.onResume();
+        DisplayPolicy.preferHighRefreshRate(this,view);
+    }
     @Override public void onDestroy(){
         ready=false;
         io.shutdown();
@@ -265,11 +269,8 @@ public class MainActivity extends Activity {
             }
             case "pick": {
                 int limit=Math.max(1,Math.min(14,d.optInt("limit",1)));
-                boolean local=d.optBoolean("local");
-                runOnUiThread(()->{
-                    if(local)openLocalAlbum(limit);
-                    else openReferencePicker(limit);
-                });
+                runOnUiThread(()->startActivityForResult(new Intent(this,AlbumActivity.class)
+                    .putExtra(AlbumActivity.LIMIT,limit),41));
                 return true;
             }
             case "save": return export(fileFrom(d));
@@ -338,20 +339,6 @@ public class MainActivity extends Activity {
             keys.put(cached);
         }
         return keys;
-    }
-    private void openReferencePicker(int limit) {
-        Intent intent=new Intent(MediaStore.ACTION_PICK_IMAGES).setType("image/*");
-        if(limit>1)intent.putExtra(MediaStore.EXTRA_PICK_IMAGES_MAX,limit);
-        if(Build.VERSION.SDK_INT>=35)
-            intent.putExtra(MediaStore.EXTRA_PICK_IMAGES_LAUNCH_TAB,MediaStore.PICK_IMAGES_TAB_ALBUMS);
-        try {
-            startActivityForResult(intent,41);
-        } catch(ActivityNotFoundException | SecurityException unavailable) {
-            openLocalAlbum(limit);
-        }
-    }
-    private void openLocalAlbum(int limit) {
-        startActivityForResult(new Intent(this,AlbumActivity.class).putExtra(AlbumActivity.LIMIT,limit),41);
     }
     private void openPicker(int request,String context,boolean multiple) {
         picker=context;
@@ -423,7 +410,13 @@ public class MainActivity extends Activity {
         else if(data.getData()!=null)uris.add(data.getData());
         io.execute(()->{
             JSONArray names=new JSONArray(); int failed=0;
-            for(Uri uri:uris)try{names.put(importRef(ImageDecoder.createSource(getContentResolver(),uri)));}catch(Exception e){failed++;}
+            for(Uri uri:uris) {
+                try{names.put(importRef(ImageDecoder.createSource(getContentResolver(),uri)));}
+                catch(Exception e){failed++;}
+                finally{
+                    if(PictureProvider.isCapture(uri))PictureProvider.captureFile(this,uri).delete();
+                }
+            }
             try {
                 JSONArray pending=new JSONArray(app.prefs.getString("pendingRefs","[]"));
                 for(int k=0;k<names.length();k++)pending.put(names.get(k));
