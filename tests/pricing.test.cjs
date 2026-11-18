@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const {PROFILES, GENERIC, cost, modelProfile, known, unit} = require('../app/src/main/assets/model.js');
+const {PROFILES, GENERIC, cost, modelProfile, known, unit, requestSize} = require('../app/src/main/assets/model.js');
 function request(rate, refs = 0, count = 1) {
     return {rate, refs:Array(refs).fill('ref'), count, size:'2048x2048', layers:false};
 }
@@ -31,4 +31,19 @@ test('unpriced models and missing tier data stay unknown', () => {
     assert.equal(cost(Object.assign(request(PROFILES[0]),{layers:true}),{usage:{generated_images:2},images:[{size:'1024x1024'}]}),null);
     assert.equal(known('doubao-seedream-5-0-260128').family,'lite');
     assert.equal(modelProfile('ep-x',[{id:'ep-x',family:'generic',cents:17}]).high,17);
+});
+
+test('official family aliases and catalog metadata keep the published price', () => {
+    assert.equal(known('Doubao-Seedream-5.5-261028').high,23);
+    assert.equal(known('doubao-seedream-5-0-261231').low,22);
+    assert.equal(modelProfile('variant-id',[],[{id:'variant-id',name:'Doubao-Seedream-5.0-Flash'}]).low,12);
+    assert.equal(modelProfile('unknown-id',[],[{id:'unknown-id',name:'Image v8'}]).low,null);
+});
+test('intelligent aspect ratio passes a tier and separate jobs count each reference', () => {
+    const body=request(PROFILES[0],1,3);
+    body.size=requestSize(PROFILES[0],'1.5K','智能比例');
+    assert.equal(body.size,'1.5K');
+    body.separate=true;
+    assert.deepEqual(cost(body,null),{input:15,output:39,count:3,total:54});
+    assert.equal(requestSize(PROFILES[3],'2K','16:9'),'2848x1600');
 });

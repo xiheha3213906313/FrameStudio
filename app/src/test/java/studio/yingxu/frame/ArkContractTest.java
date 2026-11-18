@@ -43,7 +43,7 @@ public class ArkContractTest {
         assertEquals("/api/v3/images/generations",f.target.getPath());assertEquals("POST",f.getRequestMethod());
         assertEquals("auto",req.getString("sequential_image_generation"));
         assertEquals(4,req.getJSONObject("sequential_image_generation_options").getInt("max_images"));
-        assertFalse(req.has("n"));assertEquals("url",req.getString("response_format"));assertTrue(req.getBoolean("watermark"));
+        assertFalse(req.has("n"));assertEquals("url",req.getString("response_format"));assertFalse(req.getBoolean("watermark"));
     }
     @Test public void singleImageAvoidsUnsupportedGroupFields()throws Exception {
         Fixture f=enqueue(200,"{\"data\":[]}");
@@ -94,6 +94,45 @@ public class ArkContractTest {
             assertNull(redirect.getRequestProperty("Authorization"));assertNull(image.getRequestProperty("Authorization"));
             assertEquals(11,file.length());assertEquals("second.example",image.target.getHost());
         }finally{file.delete();}
+    }
+    @Test public void intelligentRatioAndClientIdentifierAreSent()throws Exception {
+        Fixture fixture=enqueue(200,"{\"data\":[]}");
+        List<String> phases=new ArrayList<>();
+        Ark.generate(null,body("55",1).put("size","2K"),"example","client-123",
+            result->phases.add(result.optString("phase")));
+        assertEquals("2K",new JSONObject(fixture.output.toString("UTF-8")).getString("size"));
+        assertEquals("client-123",fixture.getRequestProperty("X-Client-Request-Id"));
+        assertEquals(Arrays.asList("connecting","uploading","awaiting","response",""),phases);
+    }
+    @Test public void interruptedStreamKeepsEachAlreadyReturnedLink()throws Exception {
+        String partial=new JSONObject().put("type","image_generation.partial_succeeded").put("image_index",2)
+            .put("url","https://image.example/a").put("size","1024×1024").toString();
+        JSONObject last=new JSONObject().put("trace","fixture-trace");
+        List<String> checkpoints=new ArrayList<>();
+        String data="data: "+partial+"\n\ndata: "+partial+"\n\n";
+        assertThrows(EOFException.class,()->Ark.streamResult(input(data),"job",last,result->checkpoints.add(result.toString())));
+        assertFalse(last.optBoolean("finished"));
+        assertEquals(1,last.getJSONArray("images").length());
+        assertEquals("1024x1024",last.getJSONArray("images").getJSONObject(0).getString("size"));
+        assertTrue(checkpoints.get(0).contains("https://image.example/a"));
+        assertEquals("fixture-trace",last.getString("trace"));
+    }
+    @Test public void completedStreamReturnsFinalUsage()throws Exception {
+        JSONObject complete=new JSONObject().put("type","image_generation.completed")
+            .put("usage",new JSONObject().put("generated_images",3));
+        JSONObject result=Ark.streamResult(input("data: "+complete+"\n\n"),"job",new JSONObject(),null);
+        assertEquals(3,result.getJSONObject("usage").getInt("generated_images"));
+        assertTrue(result.getBoolean("finished"));
+        assertTrue(result.getBoolean("incomplete"));
+    }
+    @Test public void manualBackupLinksRequireOfficialTosHostAndHttps() {
+        assertTrue(Ark.isTosLink("https://bucket.tos-cn-beijing.volces.com/object?X-Tos-Signature=example"));
+        assertFalse(Ark.isTosLink("https://bucket.tos-cn-beijing.volces.com.evil.example/object"));
+        assertFalse(Ark.isTosLink("https://bucket.tos-cn-beijing.volces.com@evil.example/object"));
+        assertFalse(Ark.isTosLink("http://tos-cn-beijing.volces.com/object"));
+    }
+    private InputStream input(String text) {
+        return new ByteArrayInputStream(text.getBytes(StandardCharsets.UTF_8));
     }
     private static final class Fixture extends HttpsURLConnection {
         final int status;final byte[] bytes;

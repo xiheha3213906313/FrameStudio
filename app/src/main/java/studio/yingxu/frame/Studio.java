@@ -25,8 +25,28 @@ public class Studio extends Application {
         images = new File(getFilesDir(), "images");
         refs = new File(getFilesDir(), "references");
         images.mkdirs(); refs.mkdirs();
-        // The synchronous POST may already have been billed. Only its downloads are safe to replay.
-        db.getWritableDatabase().execSQL("UPDATE jobs SET state='uncertain' WHERE state='sending'");
+        if(!prefs.getBoolean("v11TaskStatus",false)) {
+            // Version 1.0 put pre-upload timeouts under "failed"; later timeouts were "uncertain".
+            JSONArray rows=db.all();
+            for(int i=0;i<rows.length();i++) {
+                JSONObject job=rows.optJSONObject(i),result=job.optJSONObject("result");
+                if("failed".equals(job.optString("state")) &&
+                    "连接或等待响应超时，请检查网络。".equals(result.optString("message"))) {
+                    with(result,"message","连接方舟超时，请检查网络后重新生成。");
+                    db.update(job.optString("id"),"not_sent",result);
+                }
+            }
+            prefs.edit().putBoolean("v11TaskStatus",true).apply();
+        }
+        // A process restart can resume downloads, never a possibly delivered generation POST.
+        for(JSONObject job:db.interrupted()) {
+            JSONObject result=job.optJSONObject("result");
+            JSONArray images=result.optJSONArray("images");
+            boolean canFetch=images!=null && images.length()>0;
+            if(canFetch && !result.optBoolean("finished"))with(result,"incomplete",true);
+            String state=canFetch?"fetching":"connecting".equals(result.optString("phase"))?"not_sent":"uncertain";
+            db.update(job.optString("id"),state,result);
+        }
     }
     void wake() { startForegroundService(new Intent(this, ImageService.class)); }
     static String id() { return UUID.randomUUID().toString(); }
@@ -78,6 +98,18 @@ class Store extends SQLiteOpenHelper {
         getWritableDatabase().insertOrThrow("jobs", null, row);
         revision.incrementAndGet();
     }
+    void addCopies(String id,JSONObject body,int count) throws JSONException {
+        SQLiteDatabase database=getWritableDatabase();
+        database.beginTransaction();
+        try {
+            body.put("count",1);
+            for(int i=0;i<count;i++)add(i==0?id:Studio.id(),body);
+            database.setTransactionSuccessful();
+        } finally {
+            database.endTransaction();
+            revision.incrementAndGet();
+        }
+    }
     void update(String id, String state, JSONObject result) {
         ContentValues row = new ContentValues(); row.put("state", state); row.put("result", result.toString());
         getWritableDatabase().update("jobs", row, "id=?", new String[]{id});
@@ -101,6 +133,18 @@ class Store extends SQLiteOpenHelper {
             while(c.moveToNext()) rows.put(read(c));
         }
         return rows;
+    }
+    java.util.List<JSONObject> interrupted() {
+        java.util.List<JSONObject> rows=new java.util.ArrayList<>();
+        try(Cursor c=getReadableDatabase().rawQuery("SELECT * FROM jobs WHERE state='sending'",null)){
+            while(c.moveToNext())rows.add(read(c));
+        }
+        return rows;
+    }
+    JSONObject find(String id) {
+        try(Cursor c=getReadableDatabase().rawQuery("SELECT * FROM jobs WHERE id=?",new String[]{id})){
+            return c.moveToFirst()?read(c):null;
+        }
     }
     JSONObject next() {
         try (Cursor c = getReadableDatabase().rawQuery("SELECT * FROM jobs WHERE state IN ('queued','fetching') ORDER BY created,rowid LIMIT 1", null)) {

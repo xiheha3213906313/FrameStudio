@@ -26,6 +26,10 @@ public class MainActivity extends Activity {
         if(state!=null) picker=state.getString("picker","");
         view=new WebView(this);view.setBackgroundColor(0xfff8f7f3);
         WebSettings settings=view.getSettings();settings.setJavaScriptEnabled(true); settings.setAllowFileAccess(false);
+        settings.setSupportZoom(false);
+        settings.setBuiltInZoomControls(false);
+        settings.setDisplayZoomControls(false);
+        view.setOnLongClickListener(v->true);
         settings.setAllowContentAccess(false);settings.setDomStorageEnabled(false); settings.setBlockNetworkLoads(true);
         view.setWebViewClient(new WebViewClient(){
             @Override public boolean shouldOverrideUrlLoading(WebView w,WebResourceRequest r){return true;}
@@ -48,6 +52,7 @@ public class MainActivity extends Activity {
             @Override public void onPageFinished(WebView w,String url){ready=true;if(showTasks){js("window.navigate('tasks')");showTasks=false;}}
         });
         view.addJavascriptInterface(new Bridge(),"StudioNative");setContentView(view);view.loadUrl(HOME);
+        ModelSync.schedule(app);
         if(app.db.next()!=null) app.wake();
         io.execute(()->pruneRefs());
     }
@@ -74,6 +79,15 @@ public class MainActivity extends Activity {
     private class Bridge {
         @JavascriptInterface public void call(String id,String action,String raw) {
             if(isDestroyed())return;
+            if("paste".equals(action)) {
+                runOnUiThread(()->{
+                    ClipboardManager clipboard=getSystemService(ClipboardManager.class);
+                    ClipData clip=clipboard.getPrimaryClip();
+                    CharSequence value=clip==null||clip.getItemCount()==0?null:clip.getItemAt(0).getText();
+                    reply(id,true,JSONObject.quote(value==null?"":value.toString()));
+                });
+                return;
+            }
             ExecutorService pool="sync".equals(action)?network:io;
             pool.execute(()->{
                 try { Object answer=handle(action,Studio.json(raw));reply(id,true,answer); }
@@ -91,16 +105,15 @@ public class MainActivity extends Activity {
                 if(app.db.busy()) throw new IOException("请等待当前任务结束后再更换密钥");
                 String key=d.optString("key").trim();
                 if(key.length()>2048 || key.matches("(?s).*\\s.*"))throw new IOException("密钥中含有空白或长度异常");
-                app.setKey(key);return true;
-            case "sync": {
-                String k=app.key();if(k.isEmpty()) throw new IOException("请先填写 API Key");
-                JSONArray models=Ark.models(k);long now=System.currentTimeMillis();
-                synchronized(app) {
-                    if(!k.equals(app.key())) throw new IOException("密钥已更换，请重新同步");
-                    app.prefs.edit().putString("models",models.toString()).putLong("synced",now).apply();
-                }
-                return new JSONObject().put("models",models).put("synced",now);
+                app.setKey(key);ModelSync.schedule(app);return true;
+            case "sync": return ModelSync.sync(app,d.optBoolean("manual"));
+            case "modelCache": return ModelSync.cache(app);
+            case "readPhoto": {
+                String file=fileFrom(d).getName();
+                File read=new File(app.getFilesDir(),"viewed");
+                read.mkdirs();new File(read,file).createNewFile();return true;
             }
+            case "editPhoto": return importRef(ImageDecoder.createSource(fileFrom(d)));
             case "custom": app.prefs.edit().putString("custom",d.getJSONArray("list").toString()).commit();return true;
             case "jobs": {
                 long rev=app.db.revision.get();
@@ -108,7 +121,11 @@ public class MainActivity extends Activity {
                 JSONArray rows=app.db.all();
                 for(int i=0;i<rows.length();i++) {
                     JSONArray imgs=rows.getJSONObject(i).getJSONObject("result").optJSONArray("images");
-                    for(int k=0;imgs!=null && k<imgs.length();k++) imgs.getJSONObject(k).remove("url");
+                    for(int k=0;imgs!=null && k<imgs.length();k++) {
+                        JSONObject image=imgs.getJSONObject(k);
+                        image.remove("url");
+                        if(image.optBoolean("ready"))image.put("seen",new File(new File(app.getFilesDir(),"viewed"),image.optString("file")).isFile());
+                    }
                 }
                 return new JSONObject().put("revision",rev).put("rows",rows);
             }
@@ -117,7 +134,8 @@ public class MainActivity extends Activity {
                 String id=d.getString("id"); JSONObject b=d.getJSONObject("body");
                 if(!Studio.safe(id) || (b.optString("prompt").trim().isEmpty() && !b.optBoolean("layers")) || b.optString("model").trim().isEmpty())throw new IOException("请填写模型与提示词");
                 int count=b.getInt("count"), refs=b.getJSONArray("refs").length();
-                if(count<1||count>15||refs>14||refs+count>15)throw new IOException("图片数量超出范围");
+                boolean separate=b.optBoolean("separate") && !b.optBoolean("layers");
+                if(count<1||count>15||refs>14||!separate && refs+count>15)throw new IOException("图片数量超出范围");
                 for(int i=0;i<refs;i++){
                     String ref=b.getJSONArray("refs").getString(i);
                     if(!Studio.safe(ref)||!new File(app.refs,ref).exists())throw new IOException("参考图已失效，请重新添加");
@@ -132,28 +150,42 @@ public class MainActivity extends Activity {
                     if(b.optBoolean("transparent") && !input.getName().endsWith(".png"))
                         throw new IOException("此模型生成透明背景需要带透明通道的 PNG 参考图");
                 }
-                app.db.add(id,b);app.wake();return id;
+                if(separate && count>1) app.db.addCopies(id,b,count);
+                else app.db.add(id,b);
+                app.wake();return id;
             }
             case "cancel": return app.db.transition(d.getString("id"),"queued","cancelled");
             case "recover":
                 if(app.db.transition(d.getString("id"),"download_error","fetching")){app.wake();return true;}
                 return false;
-            case "delete": {
+            case "delete": return deleteJobs(new JSONArray().put(d.getString("id")))==1;
+            case "deleteMany": return deleteJobs(d.getJSONArray("ids"));
+            case "restoreLink": {
+                String id=d.getString("id"),link=d.getString("link").trim();
+                JSONObject job=app.db.find(id);
+                if(job==null || !canRestore(job))throw new IOException("当前任务无法恢复原图");
+                if(!Ark.isTosLink(link))throw new IOException("请输入 TLS 日志或 TOS 中的火山引擎对象存储 HTTPS 图片链接");
+                JSONObject result=job.getJSONObject("result");
+                JSONArray images=result.optJSONArray("images");
+                if(images==null){images=new JSONArray();result.put("images",images);}
+                images.put(new JSONObject().put("url",link).put("file",id+"-restored-"+Studio.id())
+                    .put("ready",false).put("imported",true));
+                result.put("incomplete",true);
+                app.db.update(id,"fetching",result);
+                app.wake();return true;
+            }
+            case "restorePhoto": {
                 String id=d.getString("id");
-                if(!Studio.safe(id)) throw new IOException("任务 ID 无效");
-                int removed=app.db.getWritableDatabase().delete("jobs","id=? AND state NOT IN ('queued','sending','fetching')",new String[]{id});
-                if(removed==0) throw new IOException("任务仍在处理中");
-                app.db.revision.incrementAndGet();
-                File[] files=app.images.listFiles();if(files!=null)for(File f:files)if(f.getName().startsWith(id+"-")) f.delete();
-                pruneRefs();return true;
+                JSONObject job=app.db.find(id);
+                if(job==null || !canRestore(job))throw new IOException("当前任务无法导入原图");
+                runOnUiThread(()->openPicker(42,id,false));return true;
             }
             case "pendingRefs": {
                 String pending=app.prefs.getString("pendingRefs","[]");
                 app.prefs.edit().remove("pendingRefs").apply();
                 return new JSONArray(pending);
             }
-            case "pick":
-                runOnUiThread(()->{picker="refs"; Intent i=new Intent(Intent.ACTION_OPEN_DOCUMENT).setType("image/*").addCategory(Intent.CATEGORY_OPENABLE).putExtra(Intent.EXTRA_ALLOW_MULTIPLE,true);try {startActivityForResult(i,41);} catch(ActivityNotFoundException ex){notifyUI("设备没有可用的图片选择器");}});return true;
+            case "pick": runOnUiThread(()->openPicker(41,"refs",true));return true;
             case "save": return export(fileFrom(d));
             case "share": {
                 File f=fileFrom(d);Uri uri=new Uri.Builder().scheme("content").authority("studio.yingxu.frame.pictures").appendPath(f.getName()).build();
@@ -163,11 +195,76 @@ public class MainActivity extends Activity {
             }
             case "open": {
                 String page=d.getString("page");
-                if(!Arrays.asList("apikey","docs/model-pricing","docs/image-generation-api","docs/models-api","docs/error-codes","docs/image-generation-tutorial","openManage").contains(page))throw new IOException("链接不可用");
-                Intent open=new Intent(Intent.ACTION_VIEW,Uri.parse("https://console.volcengine.com/ark/region:cn-beijing/"+page));
+                String url;
+                if("usage".equals(page))url="https://console.volcengine.com/finance/bill/detail/";
+                else if("request-usage".equals(page))url="https://docs.volcengine.com/docs/ark/get-inference-request-usage-api";
+                else if("tos".equals(page))url="https://docs.volcengine.com/docs/torch-object-storage/creating-data-subscription-rules";
+                else if(Arrays.asList("apikey","docs/model-pricing","docs/image-generation-api","docs/models-api","docs/error-codes","docs/image-generation-tutorial","docs/log-collection","openManage").contains(page))
+                    url="https://console.volcengine.com/ark/region:cn-beijing/"+page;
+                else throw new IOException("链接不可用");
+                Intent open=new Intent(Intent.ACTION_VIEW,Uri.parse(url));
                 runOnUiThread(()->{try{startActivity(open);}catch(ActivityNotFoundException e){notifyUI("请安装可打开网页的浏览器");}});return true;
             }
             default:throw new IOException("操作不可用");
+        }
+    }
+    private int deleteJobs(JSONArray ids) {
+        int count=0;
+        for(int i=0;i<ids.length();i++) {
+            String id=ids.optString(i);
+            if(!Studio.safe(id))continue;
+            JSONObject job=app.db.find(id);
+            if(job==null)continue;
+            int removed=app.db.getWritableDatabase().delete("jobs","id=? AND state NOT IN ('queued','sending','fetching')",new String[]{id});
+            if(removed==0)continue;
+            count++;
+            JSONArray images=job.optJSONObject("result").optJSONArray("images");
+            for(int k=0;images!=null && k<images.length();k++) {
+                String name=images.optJSONObject(k).optString("file");
+                if(!Studio.safe(name))continue;
+                new File(app.images,name).delete();
+                new File(app.images,name+".thumb").delete();
+                new File(new File(app.getFilesDir(),"viewed"),name).delete();
+            }
+        }
+        if(count>0){app.db.revision.incrementAndGet();pruneRefs();}
+        return count;
+    }
+    private void openPicker(int request,String context,boolean multiple) {
+        picker=context;
+        Intent intent=new Intent(Intent.ACTION_OPEN_DOCUMENT).setType("image/*").addCategory(Intent.CATEGORY_OPENABLE)
+            .putExtra(Intent.EXTRA_ALLOW_MULTIPLE,multiple);
+        try {startActivityForResult(intent,request);}
+        catch(ActivityNotFoundException e){notifyUI("设备没有可用的图片选择器");}
+    }
+    private boolean canRestore(JSONObject job) {
+        return Arrays.asList("uncertain","recovered").contains(job.optString("state")) ||
+            "partial".equals(job.optString("state")) && job.optJSONObject("result").optBoolean("incomplete");
+    }
+    private void restorePhoto(String id,Uri uri) throws Exception {
+        JSONObject job=app.db.find(id);
+        if(job==null||!canRestore(job))throw new IOException("任务已删除或状态已变化");
+        String name=id+"-restored-"+Studio.id();
+        File file=new File(app.images,name),thumb=new File(app.images,name+".thumb");
+        try {
+            try(InputStream in=getContentResolver().openInputStream(uri);OutputStream out=new FileOutputStream(file)){
+                if(in==null)throw new IOException("无法打开图片");
+                Ark.copy(in,out,120L*1024*1024);
+            }
+            BitmapFactory.Options bounds=new BitmapFactory.Options();
+            bounds.inJustDecodeBounds=true;
+            BitmapFactory.decodeFile(file.toString(),bounds);
+            if(bounds.outWidth<1||bounds.outHeight<1)throw new IOException("文件无法识别为图片");
+            PictureProvider.thumbnail(file,thumb);
+            JSONObject result=job.getJSONObject("result");
+            result.put("incomplete",true);
+            JSONArray images=result.optJSONArray("images");
+            if(images==null){images=new JSONArray();result.put("images",images);}
+            images.put(new JSONObject().put("file",name).put("ready",true).put("imported",true)
+                .put("size",bounds.outWidth+"x"+bounds.outHeight));
+            app.db.update(id,"recovered",result);
+        } catch(Exception e) {
+            file.delete();thumb.delete();throw e;
         }
     }
     private File fileFrom(JSONObject d) throws Exception {
@@ -188,13 +285,22 @@ public class MainActivity extends Activity {
     }
     @Override protected void onActivityResult(int request,int result,Intent data) {
         super.onActivityResult(request,result,data);
-        if(request!=41 || result!=RESULT_OK || data==null)return;
+        if(result!=RESULT_OK || data==null)return;
+        if(request==42 && data.getData()!=null) {
+            String id=picker;picker="";
+            io.execute(()->{
+                try {restorePhoto(id,data.getData());js("window.restoredPhoto()");}
+                catch(Exception e){notifyUI(ArkError.explain(e));}
+            });
+            return;
+        }
+        if(request!=41)return;
         picker="";List<Uri> uris=new ArrayList<>();ClipData clip=data.getClipData();
         if(clip!=null)for(int i=0;i<Math.min(14,clip.getItemCount());i++)uris.add(clip.getItemAt(i).getUri());
         else if(data.getData()!=null)uris.add(data.getData());
         io.execute(()->{
             JSONArray names=new JSONArray(); int failed=0;
-            for(Uri uri:uris)try{names.put(importRef(uri));}catch(Exception e){failed++;}
+            for(Uri uri:uris)try{names.put(importRef(ImageDecoder.createSource(getContentResolver(),uri)));}catch(Exception e){failed++;}
             try {
                 JSONArray pending=new JSONArray(app.prefs.getString("pendingRefs","[]"));
                 for(int k=0;k<names.length();k++)pending.put(names.get(k));
@@ -204,9 +310,9 @@ public class MainActivity extends Activity {
             js("window.receiveReferences && window.receiveReferences("+failures+")");
         });
     }
-    private String importRef(Uri uri)throws Exception {
+    private String importRef(ImageDecoder.Source source)throws Exception {
         // Normalise orientation and constrain memory, upload size and reference geometry.
-        Bitmap b=ImageDecoder.decodeBitmap(ImageDecoder.createSource(getContentResolver(),uri),(decoder,info,src)->{
+        Bitmap b=ImageDecoder.decodeBitmap(source,(decoder,info,src)->{
             int w=info.getSize().getWidth(),h=info.getSize().getHeight();
             if(Math.min(w,h)<15 || (double)Math.max(w,h)/Math.min(w,h)>16)throw new IllegalArgumentException("不支持的宽高比");
             double scale=Math.min(1,2048.0/Math.max(w,h));
