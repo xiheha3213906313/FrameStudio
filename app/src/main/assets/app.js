@@ -33,6 +33,8 @@ const initial={prompt:'',refs:[],model:PROFILES[0].id,level:'2K',ratio:RATIOS[0]
 let draft=Object.assign({},initial),config={models:[],custom:[],hasKey:false,synced:0},jobs=[],page='create',modal='',context='',previousPhotoTask='',sampleIndex=0,taskFilter='all',syncing=false,submitting=false,lastSyncError='',toastTimer,draftTimer,seq=0,refreshing=false;
 const calls=new Map();
 let jobRevision=-1;
+let previousRefTask='';
+const badgeHolds={tasks:null,gallery:null};
 let galleryModel='',taskModel='',selecting=false;
 const pickedTasks=new Set(),expandedStacks=new Set();
 let autoSyncAt=0;
@@ -79,14 +81,59 @@ function body(){
  layerMax:draft.layers?(p.family==='55'?draft.layerMax:p.layers):0,rate:{family:p.family,low:p.low,high:p.high,input:p.input,free:p.free}};
 }
 function date(t){return new Date(t).toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false});}
+function activeCount(){return jobs.filter(job=>active(job.state)).length;}
+function unreadCount(){return photos().filter(item=>!item.p.seen).length;}
 function nav(){
- const counts={tasks:jobs.filter(j=>active(j.state)).length,gallery:photos().filter(x=>!x.p.seen).length};
- $('#nav').innerHTML=navItems.map(([key,label])=>{
-  const count=counts[key]||0;
-  const badge=count?'<span class="nav-count">'+(count>99?'99+':count)+'</span>':'';
-  return button('nav','<span class="navicon">'+icon(key)+badge+'</span>'+label,page===key?'active':'',key,
-   'aria-label="'+label+(count?' '+count+(key==='gallery'?' 张未查看':' 个进行中任务'):'')+'" '+(page===key?'aria-current="page"':''));
+ const bar=$('#nav');
+ if(!bar.childElementCount)bar.innerHTML=navItems.map(([key,label])=>{
+  const badge=['tasks','gallery'].includes(key)?'<span class="nav-count" aria-hidden="true"></span>':'';
+  return button('nav','<span class="navicon">'+icon(key)+badge+'</span>'+label,'nav-item',key);
  }).join('');
+ const counts={tasks:badgeHolds.tasks===null?activeCount():badgeHolds.tasks,gallery:badgeHolds.gallery===null?unreadCount():badgeHolds.gallery};
+ for(const [key,label] of navItems) {
+  const item=bar.querySelector('[data-val="'+key+'"]'),activePage=page===key,count=counts[key]||0;
+  item.classList.toggle('active',activePage);
+  if(activePage)item.setAttribute('aria-current','page');else item.removeAttribute('aria-current');
+  item.setAttribute('aria-label',label+(count?' '+count+(key==='gallery'?' 张未查看':' 个进行中任务'):''));
+  const badge=item.querySelector('.nav-count');
+  if(!badge)continue;
+  if(count) {
+   badge.textContent=count>99?'99+':count;
+   badge.classList.toggle('single',count<10);
+  }
+  badge.classList.toggle('visible',count>0);
+ }
+}
+function centerOf(element) {
+ const rect=element.getBoundingClientRect();
+ return {x:rect.left+rect.width/2,y:rect.top+rect.height/2};
+}
+function badgeCenter(key){
+ return centerOf($('#nav [data-val="'+key+'"] .nav-count'));
+}
+function flyDots(origin,destination,count,arrived=()=>{}) {
+ if(!origin||document.hidden||!Element.prototype.animate||matchMedia('(prefers-reduced-motion: reduce)').matches){
+  for(let i=0;i<count;i++)arrived(i);
+  return Promise.resolve();
+ }
+ const end=badgeCenter(destination);
+ return Promise.all(Array.from({length:count},(_,index)=>new Promise(resolve=>{
+  const dot=document.createElement('span');
+  dot.className='nav-flight';
+  dot.setAttribute('aria-hidden','true');
+  dot.style.left=origin.x+'px';dot.style.top=origin.y+'px';
+  document.body.appendChild(dot);
+  const dx=end.x-origin.x,dy=end.y-origin.y;
+  const arc=Math.min(54,25+Math.abs(dx)*.11);
+  const animation=dot.animate([
+   {transform:'translate(-50%,-50%) scale(.5)',opacity:0},
+   {transform:'translate(calc(-50% + '+(dx*.45)+'px), calc(-50% + '+(dy*.42-arc)+'px)) scale(1)',opacity:1,offset:.47},
+   {transform:'translate(calc(-50% + '+dx+'px), calc(-50% + '+dy+'px)) scale(.45)',opacity:.92}
+  ],{duration:440,delay:index*40,fill:'both',easing:'cubic-bezier(.2,.6,.35,1)'});
+  function settle(){dot.remove();arrived(index);resolve();}
+  animation.onfinish=settle;
+  animation.oncancel=settle;
+ })));
 }
 function title(t,right){return '<div class="title"><h1>'+e(t)+'</h1>'+(right||'')+'</div>';}
 function hero(){
@@ -94,7 +141,7 @@ function hero(){
  return '<div class="hero"><img src="art/'+s.img+'.jpg" alt="'+e(s.title)+'"><div class="hero-top"><span class="feature-label">'+icon('book')+'提示词灵感</span><div class="dots">'+samples.map((x,i)=>button('slide','',i===sampleIndex?'sel':'',i,'aria-label="查看'+e(x.title)+'"')).join('')+'</div></div><div class="hero-bottom"><div><h2>'+e(s.title)+'</h2><p>'+e(s.style)+'</p></div>'+button('sample',icon('upRight'),'circle',sampleIndex,'aria-label="查看并使用提示词"')+'</div></div>';
 }
 function refstrip(){
- return '<div class="refstrip">'+draft.refs.map((r,i)=>'<div class="refitem">'+button('refPhoto','<img src="refs/'+e(r)+'.thumb" alt="参考图 '+(i+1)+'">','ref-preview',r)+button('unref','×','ref-remove',i,'aria-label="移除参考图"')+'</div>').join('')+(draft.refs.length<allowedRefs()?button('pick',icon('plus')+'<span class="ref-label">参考图</span>','refslot'):'')+'</div>';
+ return '<div class="refstrip">'+draft.refs.map((r,i)=>'<div class="refitem">'+button('refPhoto','<img src="refs/'+e(r)+'.thumb" alt="参考图 '+(i+1)+'">','ref-preview',r)+button('unref','×','ref-remove',i,'aria-label="移除参考图"')+'</div>').join('')+(draft.refs.length<allowedRefs()?button('pick',icon('plus')+'<span class="ref-label">参考图</span>','refslot')+button('pickLocal','更多相册','textbtn ref-albums'):'')+'</div>';
 }
 function createPage(){
  normalize();const b=body(),total=cost(b,null);
@@ -124,12 +171,20 @@ function galleryPage(){
 }
 const failedStates=['failed','not_sent','uncertain','download_error'];
 const successfulStates=['done','partial','recovered'];
+function taskThumb(job) {
+ const image=(job.result.images||[]).find(item=>item.ready);
+ const ref=job.body.refs&&job.body.refs[0];
+ if(ref&&failedStates.includes(job.state))return '<img src="refs/'+e(ref)+'.thumb" alt="首张输入参考图">';
+ return image?'<img src="images/'+e(image.file)+'.thumb" alt="生成图片">':icon('frame');
+}
 function taskCard(j){
- const image=(j.result.images||[]).find(i=>i.ready),chosen=pickedTasks.has(j.id);
+ const chosen=pickedTasks.has(j.id);
  const phase=j.result.phase;
  const status=j.state==='sending'?(phase==='connecting'?'连接中':phase==='uploading'?'上传中':'等待方舟出图'):stateNames[j.state];
- return button('task','<span class="tile">'+(image?'<img src="images/'+e(image.file)+'.thumb" alt="">':icon('frame'))+'</span>'+
- '<span class="tasktext"><b>'+e(j.body.prompt||'图层拆分')+'</b><small class="sub">'+e(j.body.name)+' · '+e(date(j.created))+'</small><br><span class="badge '+(failedStates.includes(j.state)?'warn':'')+'">'+e(status)+'</span></span>'+
+ const label='<span class="badge '+(failedStates.includes(j.state)?'warn':'')+'">'+e(status)+'</span>';
+ return button('task','<span class="tasklead"><span class="tile">'+taskThumb(j)+'</span>'+label+'</span>'+
+ '<span class="tasktext"><b>'+e(j.body.prompt||'图层拆分')+'</b><small class="sub task-model">'+e(j.body.name)+'</small>'+
+ '<time class="sub" datetime="'+new Date(j.created).toISOString()+'">'+e(date(j.created))+'</time></span>'+
  icon(selecting?(chosen?'check':'frame'):'next'),'taskcard'+(chosen?' selected':''),j.id,selecting?(active(j.state)?'disabled':'aria-pressed="'+chosen+'"'):'');
 }
 function matchesTaskFilter(job) {
@@ -160,8 +215,9 @@ function stackCard(stack) {
  const label=selecting?'aria-pressed="'+(allSelected?'true':someSelected?'mixed':'false')+'"':'aria-expanded="'+shown+'"';
  const ref=first.body.refs&&first.body.refs[0];
  const thumb=ref?'<img src="refs/'+e(ref)+'.thumb" alt="">':icon('layers');
- const toggle=button('taskStack','<span class="tile">'+thumb+'</span><span class="tasktext"><b>'+
-  e(first.body.prompt||'图层拆分')+'</b><span class="badge warn">'+stack.length+' 条失败</span></span>'+
+ const toggle=button('taskStack','<span class="tasklead"><span class="tile">'+thumb+'</span><span class="badge warn">'+
+  stack.length+' 条失败</span></span><span class="tasktext"><b>'+e(first.body.prompt||'图层拆分')+'</b>'+
+  '<time class="sub" datetime="'+new Date(first.created).toISOString()+'">'+e(date(first.created))+'</time></span>'+
   icon(selecting?(allSelected?'check':'frame'):(shown?'down':'next')),'taskcard stack-toggle'+(someSelected?' selected':''),first.id,label);
  return '<div class="task-stack'+(shown?' expanded':'')+'">'+toggle+
   (shown?'<div class="stack-entries">'+stack.map(taskCard).join('')+'</div>':'')+'</div>';
@@ -181,7 +237,7 @@ function settingsPage(){return title('设置')+'<div class="section-title"><h2>�
  row('custom','自定义推理接入点','添加 Endpoint ID 或新的 Model ID')+'<div class="section-title"><h2>使用与计费</h2></div>'+
  row('ledger','本机费用统计','按任务提交时的单价快照汇总')+row('doc','官方模型价格','查看火山方舟最新公布的计费规则','docs/model-pricing')+
  row('doc','错误码手册','按错误码排查权限、配额、请求参数等问题','docs/error-codes')+row('doc','图片生成指南','查看模型能力、参考图限制和调用示例','docs/image-generation-tutorial')+
- '<div class="panel"><h3>映序 · Frame Studio</h3><p class="sub">版本 1.3 · 火山方舟北京地域，标准按量 API。图片和任务记录保存在此设备。</p></div>';}
+ '<div class="panel"><h3>映序 · Frame Studio</h3><p class="sub">版本 1.4 · 火山方舟北京地域，标准按量 API。图片和任务记录保存在此设备。</p></div>';}
 function animateIn(element) {
  if(!element.animate || matchMedia('(prefers-reduced-motion: reduce)').matches)return;
  const animation=element.animate([{opacity:0,transform:'translateY(9px)'},{opacity:1,transform:'translateY(0)'}],
@@ -216,7 +272,6 @@ function show(type,val){
  if(!wasOpen) {
   void overlay.offsetWidth;
   overlay.classList.add('is-visible');
-  api('modalChrome',{dimmed:true}).catch(()=>{});
  }
  scheduleSeen();
 }
@@ -226,7 +281,6 @@ function close(){
  window.blurInputs();
  modal='';context='';
  overlay.classList.remove('is-visible');
- api('modalChrome',{dimmed:false}).catch(()=>{});
  function finish(){
   overlay.hidden=true;document.body.style.overflow='';
   scheduleSeen();
@@ -234,6 +288,10 @@ function close(){
  if(matchMedia('(prefers-reduced-motion: reduce)').matches)finish();
  else overlayTimer=setTimeout(finish,205);
 }
+window.setStatusInset=function(pixels){
+ document.documentElement.style.setProperty('--status-inset',Math.max(0,pixels/(window.devicePixelRatio||1))+'px');
+ scheduleSeen();
+};
 window.blurInputs=function(){
  const focused=document.activeElement;
  if(focused&&focused.matches('input,textarea,[contenteditable="true"]'))focused.blur();
@@ -278,6 +336,11 @@ function taskSheet(j){
  if(!j)return '<p>记录已删除。</p>';
  const b=j.body,r=j.result,done=['done','partial','download_error','fetching'].includes(j.state),images=r.images||[];
  let info=entry('状态',stateNames[j.state])+entry('创建时间',date(j.created))+entry('模型',b.model)+entry('请求尺寸',b.layers?b.level:b.size||'默认');
+ const references=b.refs||[];
+ if(references.length){
+  info+='<section class="task-references"><h3>输入参考图</h3><div class="thumbs">'+references.map((ref,index)=>
+   button('taskRef','<img src="refs/'+e(ref)+'.thumb" alt="输入参考图 '+(index+1)+'">','',ref)).join('')+'</div></section>';
+ }else info+=entry('输入参考图','无');
  if(r.trace)info+=entry('方舟 Request ID',r.trace);
  if(r.httpStatus)info+=entry('HTTP 状态',r.httpStatus);
  if(j.state==='not_sent')info+='<p class="notice">本次生成请求体尚未发送，因此这条任务没有提交生图。</p>';
@@ -387,14 +450,21 @@ async function refresh(){
   const fresh=await api('jobs',{since:jobRevision});
   if(!fresh)return;
   const firstLoad=jobRevision<0;
-  const existing=new Set(photos().map(x=>x.p.file));
+  const existing=new Set(photos().map(x=>x.p.file)),previousUnread=unreadCount();
   jobRevision=fresh.revision;
   jobs=fresh.rows||[];
   const images=photos();
   if(galleryModel&&!images.some(x=>x.j.body.model===galleryModel))galleryModel='';
   if(taskModel&&!jobs.some(j=>j.body.model===taskModel))taskModel='';
   for(const id of pickedTasks)if(!jobs.some(j=>j.id===id&&!active(j.state)))pickedTasks.delete(id);
-  if(page==='tasks'&&!firstLoad&&images.some(x=>!x.p.imported&&!existing.has(x.p.file)&&!x.p.seen)){
+  const delivered=!firstLoad&&images.some(x=>!x.p.imported&&!existing.has(x.p.file)&&!x.p.seen);
+  if(delivered&&!document.hidden){
+   badgeHolds.gallery=previousUnread;
+   nav();
+   try {await flyDots(badgeCenter('tasks'),'gallery',1);}
+   finally {badgeHolds.gallery=null;}
+  }
+  if(page==='tasks'&&delivered){
    galleryModel='';selecting=false;pickedTasks.clear();navigate('gallery');return;
   }
   if(page==='tasks'||page==='gallery')draw();else nav();
@@ -496,11 +566,35 @@ async function generate(){
  if(!draft.model || !options().some(o=>o.id===draft.model)){show('models');return;}
  if(draft.refs.length>allowedRefs()){toast('请选取 1 至 '+allowedRefs()+' 张参考图');return;}
  if(!draft.layers&&draft.ratio==='自定义'&&profile().levels.length&&!body().size){show('params');toast('请检查自定义比例');return;}
+ const origin=centerOf($('#app .generate'));
+ const b=body();
  submitting=true;draw();
- try{await api('draft',draft);const b=body();await api('submit',{id:idForRequest(),body:b});taskFilter='all';await refresh();toast('任务已加入队列');}
- finally{submitting=false;if(page==='create')draw();}
+ try{
+  await api('draft',draft);
+  await api('submit',{id:idForRequest(),body:b});
+  taskFilter='all';
+  badgeHolds.tasks=activeCount();
+  const pendingRefresh=refresh();
+  try {
+   await flyDots(origin,'tasks',b.count,index=>{
+    if(b.separate||index===b.count-1)badgeHolds.tasks=Math.min(activeCount(),badgeHolds.tasks+1);
+    nav();
+   });
+   await pendingRefresh;
+  } finally {
+   badgeHolds.tasks=null;nav();
+  }
+  toast('任务已加入队列');
+ }finally{
+  submitting=false;
+  if(page==='create')draw();
+ }
 }
 function studioBack(){
+ if(modal==='refPhoto'&&previousRefTask){
+  const id=previousRefTask;
+  previousRefTask='';show('task',id);return true;
+ }
  if(modal){if(modal==='restoreLink'){show('task',context);return true;}if(modal==='editPhoto'){show('photo',context);return true;}if(modal==='photo'&&previousPhotoTask){show('task',previousPhotoTask);previousPhotoTask='';}else close();return true;}
  if(page==='tasks'&&selecting){selecting=false;pickedTasks.clear();draw();return true;}
  if(page!=='create'){navigate('create');return true;}return false;
@@ -515,7 +609,9 @@ async function act(a,v){
  case 'useSample':draft.prompt=samples[Number(v)||0].prompt;close();redraw();toast('已填入画面描述');break;
  case 'models':case 'params':case 'key':case 'cost':case 'sample':case 'samples':case 'ledger':case 'deleteAsk':case 'custom':case 'removeCustom':case 'forgetAsk':show(a,v);break;
  case 'photo':previousPhotoTask=modal==='task'?context:'';show('photo',v);break;
- case 'refPhoto':case 'editPhoto':case 'restoreLink':case 'deleteBatchAsk':show(a,v);break;
+ case 'refPhoto':previousRefTask='';show(a,v);break;
+ case 'taskRef':previousRefTask=context;show('refPhoto',v);break;
+ case 'editPhoto':case 'restoreLink':case 'deleteBatchAsk':show(a,v);break;
  case 'galleryModel':galleryModel=v;draw();break;
  case 'taskModelFilter':show(a,v);break;
  case 'taskModel':taskModel=v;pickedTasks.clear();expandedStacks.clear();close();draw();break;
@@ -573,7 +669,10 @@ async function act(a,v){
   const list=config.custom.filter(x=>x.id!==id).concat([{id:id,name:name,family:family,cents:fee?Math.round(Number(fee)*100):null}]);
   await api('custom',{list:list});config.custom=list;changeModel(id);toast('已保存并选用接入点');break;}
  case 'doRemove':{const list=config.custom.filter((_,i)=>i!==Number(v));await api('custom',{list:list});config.custom=list;if(!options().some(m=>m.id===draft.model))setDraftModel((options()[0]||{}).id||'');show('custom');redraw();break;}
- case 'pick':await api('draft',draft);await api('pick',{limit:allowedRefs()-draft.refs.length});break;
+ case 'pick':case 'pickLocal':
+  await api('draft',draft);
+  await api('pick',{limit:allowedRefs()-draft.refs.length,local:a==='pickLocal'});
+  break;
  case 'unref':draft.refs.splice(Number(v),1);redraw();break;
  case 'doc':await api('open',{page:v});break;
  case 'generate':await generate();break;

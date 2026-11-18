@@ -237,7 +237,7 @@ public class AlbumActivity extends Activity {
         boolean permitted=hasAccess();
         folders.setVisibility(View.GONE);
         access.setVisibility(fullAccess()?View.GONE:View.VISIBLE);
-        access.setText(permitted?"选择更多照片":"相册权限与照片选择");
+        access.setText(permitted?"更改照片访问范围":"相册权限与照片选择");
         message.setText(permitted?"正在读取相册…":"允许访问照片后，可以按相册浏览并多选。");
         message.setVisibility(View.VISIBLE);
         if(!permitted) {
@@ -249,17 +249,23 @@ public class AlbumActivity extends Activity {
         }
         catalog.execute(()->{
             Map<String,List<Photo>> result=new LinkedHashMap<>();
+            Map<String,String> folderNames=new LinkedHashMap<>();
             List<Photo> recent=new ArrayList<>();
             result.put("",recent);
             Uri collection=MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL);
-            String[] columns={MediaStore.Images.Media._ID,MediaStore.Images.Media.BUCKET_DISPLAY_NAME,MediaStore.Images.Media.DISPLAY_NAME};
+            String[] columns={MediaStore.Images.Media._ID,MediaStore.Images.Media.BUCKET_DISPLAY_NAME,MediaStore.Images.Media.DISPLAY_NAME,
+                MediaStore.Images.Media.BUCKET_ID,MediaStore.Images.Media.VOLUME_NAME};
             boolean failed=false;
             try(Cursor cursor=getContentResolver().query(collection,columns,null,null,MediaStore.Images.Media._ID+" DESC")) {
                 while(cursor!=null && cursor.moveToNext() && !Thread.currentThread().isInterrupted()) {
                     Photo photo=new Photo(ContentUris.withAppendedId(collection,cursor.getLong(0)),cursor.getString(2));
                     recent.add(photo);
                     String folder=cursor.getString(1);
-                    if(folder!=null&&!folder.isEmpty())result.computeIfAbsent(folder,k->new ArrayList<>()).add(photo);
+                    if(folder!=null&&!folder.isEmpty()) {
+                        String album=cursor.getString(4)+"/"+cursor.getString(3);
+                        folderNames.putIfAbsent(album,folder);
+                        result.computeIfAbsent(album,k->new ArrayList<>()).add(photo);
+                    }
                 }
             } catch(RuntimeException e) { failed=true; }
             final boolean queryFailed=failed;
@@ -271,8 +277,8 @@ public class AlbumActivity extends Activity {
                 for(Photo photo:recent)available.add(photo.uri);
                 selected.retainAll(available);
                 List<String> names=new ArrayList<>(result.keySet());
-                List<String> labels=new ArrayList<>(names);
-                labels.set(0,"所有照片");
+                List<String> labels=new ArrayList<>();
+                for(String key:names)labels.add(key.isEmpty()?"所有照片":folderNames.get(key));
                 ArrayAdapter<String> foldersAdapter=new ArrayAdapter<>(this,android.R.layout.simple_spinner_item,labels);
                 foldersAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
                 folders.setAdapter(foldersAdapter);

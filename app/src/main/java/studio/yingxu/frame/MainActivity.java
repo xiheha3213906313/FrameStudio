@@ -1,7 +1,5 @@
 package studio.yingxu.frame;
 
-import android.animation.ArgbEvaluator;
-import android.animation.ValueAnimator;
 import android.app.*;
 import android.content.*;
 import android.graphics.*;
@@ -25,11 +23,17 @@ public class MainActivity extends Activity {
     private String picker="";
     private boolean ready, showTasks;
     private boolean keyboardVisible;
-    private ValueAnimator barAnimator;
+    private int statusInset;
     private ViewTreeObserver.OnGlobalLayoutListener keyboardLayout;
     private final Map<String,String> referenceKeys=new HashMap<>();
     @Override public void onCreate(Bundle state) {
         super.onCreate(state); app=(Studio)getApplication();
+        Window window=getWindow();
+        window.setStatusBarColor(Color.TRANSPARENT);
+        window.setStatusBarContrastEnforced(false);
+        View decor=window.getDecorView();
+        decor.setSystemUiVisibility(decor.getSystemUiVisibility() | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+            | View.SYSTEM_UI_FLAG_LAYOUT_STABLE | View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR);
         showTasks=getIntent().getBooleanExtra("tasks",false);
         if(state!=null) picker=state.getString("picker","");
         view=new WebView(this);view.setBackgroundColor(0xfff8f7f3);
@@ -57,10 +61,14 @@ public class MainActivity extends Activity {
                 }
                 return new WebResourceResponse("text/plain","UTF-8",404,"Missing",Collections.emptyMap(),new ByteArrayInputStream(new byte[0]));
             }
-            @Override public void onPageFinished(WebView w,String url){ready=true;if(showTasks){js("window.navigate('tasks')");showTasks=false;}}
+            @Override public void onPageFinished(WebView w,String url){
+                ready=true;
+                sendStatusInset();
+                if(showTasks){js("window.navigate('tasks')");showTasks=false;}
+            }
         });
         view.addJavascriptInterface(new Bridge(),"StudioNative");setContentView(view);
-        observeKeyboard();
+        observeInsets();
         view.loadUrl(HOME);
         ModelSync.schedule(app);
         if(app.db.next()!=null) app.wake();
@@ -80,14 +88,23 @@ public class MainActivity extends Activity {
     @Override public void onBackPressed(){
         view.evaluateJavascript("window.studioBack ? window.studioBack() : false",v->{if(!"true".equals(v))super.onBackPressed();});
     }
-    private void observeKeyboard() {
-        if(Build.VERSION.SDK_INT>=30) {
-            view.setOnApplyWindowInsetsListener((v,insets)->{
+    private void observeInsets() {
+        view.setOnApplyWindowInsetsListener((v,insets)->{
+            int top;
+            if(Build.VERSION.SDK_INT>=30) {
+                top=insets.getInsets(WindowInsets.Type.statusBars() | WindowInsets.Type.displayCutout()).top;
                 setKeyboardVisible(insets.isVisible(WindowInsets.Type.ime()));
-                return v.onApplyWindowInsets(insets);
-            });
-            view.requestApplyInsets();
-        } else {
+            } else {
+                top=insets.getStableInsetTop();
+            }
+            if(statusInset!=top) {
+                statusInset=top;
+                if(ready)sendStatusInset();
+            }
+            return v.onApplyWindowInsets(insets);
+        });
+        view.requestApplyInsets();
+        if(Build.VERSION.SDK_INT<30) {
             Rect visibleArea=new Rect();
             View root=view.getRootView();
             keyboardLayout=()->{
@@ -99,6 +116,9 @@ public class MainActivity extends Activity {
             view.getViewTreeObserver().addOnGlobalLayoutListener(keyboardLayout);
         }
     }
+    private void sendStatusInset() {
+        js("window.setStatusInset && window.setStatusInset("+statusInset+")");
+    }
     private void setKeyboardVisible(boolean visible) {
         if(keyboardVisible && !visible) {
             view.postDelayed(()->{
@@ -107,20 +127,10 @@ public class MainActivity extends Activity {
         }
         keyboardVisible=visible;
     }
-    private void setModalChrome(boolean dimmed) {
-        Window window=getWindow();
-        if(barAnimator!=null)barAnimator.cancel();
-        int end=dimmed?0xff93948f:0xfff8f7f3;
-        barAnimator=ValueAnimator.ofObject(new ArgbEvaluator(),window.getStatusBarColor(),end);
-        barAnimator.setDuration(200);
-        barAnimator.addUpdateListener(animation->window.setStatusBarColor((Integer)animation.getAnimatedValue()));
-        barAnimator.start();
-    }
     @Override public void onDestroy(){
         ready=false;
         io.shutdown();
         network.shutdown();
-        if(barAnimator!=null)barAnimator.cancel();
         if(keyboardLayout!=null)view.getViewTreeObserver().removeOnGlobalLayoutListener(keyboardLayout);
         view.removeJavascriptInterface("StudioNative");
         view.destroy();
@@ -134,14 +144,6 @@ public class MainActivity extends Activity {
     private class Bridge {
         @JavascriptInterface public void call(String id,String action,String raw) {
             if(isDestroyed())return;
-            if("modalChrome".equals(action)) {
-                boolean dimmed=Studio.json(raw).optBoolean("dimmed");
-                runOnUiThread(()->{
-                    if(!isDestroyed())setModalChrome(dimmed);
-                    reply(id,true,true);
-                });
-                return;
-            }
             if("paste".equals(action)) {
                 runOnUiThread(()->{
                     ClipboardManager clipboard=getSystemService(ClipboardManager.class);
@@ -263,7 +265,11 @@ public class MainActivity extends Activity {
             }
             case "pick": {
                 int limit=Math.max(1,Math.min(14,d.optInt("limit",1)));
-                runOnUiThread(()->openReferencePicker(limit));
+                boolean local=d.optBoolean("local");
+                runOnUiThread(()->{
+                    if(local)openLocalAlbum(limit);
+                    else openReferencePicker(limit);
+                });
                 return true;
             }
             case "save": return export(fileFrom(d));
@@ -341,8 +347,11 @@ public class MainActivity extends Activity {
         try {
             startActivityForResult(intent,41);
         } catch(ActivityNotFoundException | SecurityException unavailable) {
-            startActivityForResult(new Intent(this,AlbumActivity.class).putExtra(AlbumActivity.LIMIT,limit),41);
+            openLocalAlbum(limit);
         }
+    }
+    private void openLocalAlbum(int limit) {
+        startActivityForResult(new Intent(this,AlbumActivity.class).putExtra(AlbumActivity.LIMIT,limit),41);
     }
     private void openPicker(int request,String context,boolean multiple) {
         picker=context;
