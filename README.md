@@ -2,6 +2,10 @@
 
 适用于 Android 10 及以上的个人图片创作应用。使用北京地域的火山方舟标准按量 API Key。应用内包含中文创作台、作品集、任务和设置。
 
+## 下载安装
+
+从 [GitHub Releases](https://github.com/xiheha3213906313/FrameStudio/releases/latest) 下载 APK。历史版本见 [全部发行版](https://github.com/xiheha3213906313/FrameStudio/releases)。
+
 ## 第一次生成
 
 1. 在方舟控制台开通需要的图片模型，创建有调用权限的 API Key。
