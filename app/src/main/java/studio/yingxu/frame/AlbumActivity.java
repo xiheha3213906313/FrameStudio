@@ -33,7 +33,6 @@ import android.view.ViewConfiguration;
 import android.view.ViewGroup;
 import android.view.Window;
 import android.view.WindowInsets;
-import android.view.WindowInsetsController;
 import android.view.animation.PathInterpolator;
 import android.widget.BaseAdapter;
 import android.widget.Button;
@@ -149,20 +148,6 @@ public class AlbumActivity extends Activity {
     }
 
     private void buildLayout(){
-        Window window=getWindow();
-        window.setStatusBarContrastEnforced(false);
-        window.setNavigationBarContrastEnforced(false);
-        if(Build.VERSION.SDK_INT>=30){
-            window.setDecorFitsSystemWindows(false);
-            int lightBars=WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
-                |WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS;
-            WindowInsetsController controller=window.getInsetsController();
-            if(controller!=null)controller.setSystemBarsAppearance(lightBars,lightBars);
-        }else{
-            window.getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LAYOUT_STABLE
-                |View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN|View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
-                |View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR|View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR);
-        }
         overridePendingTransition(0,0);
         overlay=new PickerOverlay();
         backdrop=new View(this);
@@ -256,6 +241,17 @@ public class AlbumActivity extends Activity {
             return insets;
         });
         setContentView(overlay);
+        Window window=getWindow();
+        window.setStatusBarContrastEnforced(false);
+        window.setNavigationBarContrastEnforced(false);
+        if(Build.VERSION.SDK_INT>=30){
+            window.setDecorFitsSystemWindows(false);
+        }else{
+            View decor=window.getDecorView();
+            decor.setSystemUiVisibility(decor.getSystemUiVisibility()|View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                |View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN|View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION);
+        }
+        overlay.requestApplyInsets();
         overlay.post(()->{if(!closing&&!isDestroyed())animateSheet(1f);});
         updateView();
     }

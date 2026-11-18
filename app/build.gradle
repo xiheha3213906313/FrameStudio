@@ -7,16 +7,18 @@ android {
         applicationId 'studio.yingxu.frame'
         minSdk 29
         targetSdk 34
-        versionCode 7
-        versionName '1.6'
+        versionCode 8
+        versionName '1.6.1'
     }
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_1_8
         targetCompatibility JavaVersion.VERSION_1_8
     }
+    testOptions.unitTests.includeAndroidResources = true
 }
 
 dependencies {
     testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.robolectric:robolectric:4.14.1'
     testImplementation 'org.json:json:20240303'
 }
