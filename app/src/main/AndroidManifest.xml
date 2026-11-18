@@ -4,10 +4,14 @@
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"/>
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32"/>
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES"/>
+    <uses-permission android:name="android.permission.READ_MEDIA_VISUAL_USER_SELECTED"/>
     <application android:name=".Studio" android:allowBackup="false" android:usesCleartextTraffic="false" android:label="映序" android:theme="@style/StudioTheme" android:icon="@drawable/mark">
         <activity android:name=".MainActivity" android:exported="true" android:windowSoftInputMode="adjustResize">
             <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
         </activity>
+        <activity android:name=".AlbumActivity" android:exported="false" android:label="选择参考图"/>
         <service android:name=".ImageService" android:exported="false" android:foregroundServiceType="dataSync"/>
         <service android:name=".ModelSync" android:permission="android.permission.BIND_JOB_SERVICE" android:exported="true"/>
         <provider android:name=".PictureProvider" android:authorities="studio.yingxu.frame.pictures" android:exported="false" android:grantUriPermissions="true"/>

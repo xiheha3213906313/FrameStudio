@@ -2,18 +2,12 @@
 
 function imageViewer(src,description) {
  return '<div class="viewer" tabindex="0" aria-label="'+e(description)+'，支持双指缩放和拖动">'+
-  '<img src="'+e(src)+'" alt="'+e(description)+'" draggable="false"></div>'+
-  '<div class="viewer-controls" aria-label="图片缩放">'+
-  '<button type="button" class="choice" data-zoom="out" aria-label="缩小图片">−</button>'+
-  '<button type="button" class="choice" data-zoom="reset" aria-label="还原图片">100%</button>'+
-  '<button type="button" class="choice" data-zoom="in" aria-label="放大图片">+</button></div>';
+  '<img src="'+e(src)+'" alt="'+e(description)+'" draggable="false"></div>';
 }
 
 function setupViewer(viewport) {
  if(!viewport)return;
  const image=viewport.querySelector('img');
- const controls=viewport.nextElementSibling;
- const reset=controls.querySelector('[data-zoom="reset"]');
  const points=new Map();
  let scale=1,x=0,y=0;
  function render() {
@@ -23,7 +17,6 @@ function setupViewer(viewport) {
   const maxY=Math.max(0,((image.naturalHeight||height)*fit*scale-height)/2);
   x=Math.max(-maxX,Math.min(maxX,x));y=Math.max(-maxY,Math.min(maxY,y));
   image.style.transform='translate('+x+'px,'+y+'px) scale('+scale+')';
-  reset.textContent=Math.round(scale*100)+'%';
  }
  function zoom(next,px=0,py=0) {
   const previous=scale;
@@ -35,11 +28,10 @@ function setupViewer(viewport) {
   const r=viewport.getBoundingClientRect();
   return [px-r.left-r.width/2,py-r.top-r.height/2];
  }
- controls.addEventListener('click',event=>{
-  const item=event.target.closest('[data-zoom]');
-  if(!item)return;
-  if(item.dataset.zoom==='reset'){scale=1;x=0;y=0;render();}
-  else zoom(scale*(item.dataset.zoom==='in'?1.5:1/1.5));
+ viewport.addEventListener('keydown',event=>{
+  if(!['+','=','-','0'].includes(event.key))return;
+  event.preventDefault();
+  zoom(event.key==='0'?1:scale*(event.key==='-'?1/1.5:1.5));
  });
  viewport.addEventListener('dblclick',event=>zoom(scale>1?1:2,...offset(event.clientX,event.clientY)));
  viewport.addEventListener('pointerdown',event=>{

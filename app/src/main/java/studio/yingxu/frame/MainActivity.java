@@ -108,10 +108,20 @@ public class MainActivity extends Activity {
                 app.setKey(key);ModelSync.schedule(app);return true;
             case "sync": return ModelSync.sync(app,d.optBoolean("manual"));
             case "modelCache": return ModelSync.cache(app);
-            case "readPhoto": {
-                String file=fileFrom(d).getName();
-                File read=new File(app.getFilesDir(),"viewed");
-                read.mkdirs();new File(read,file).createNewFile();return true;
+            case "readPhotos": {
+                JSONArray requested=d.getJSONArray("files");
+                JSONArray marked=new JSONArray();
+                File directory=new File(app.getFilesDir(),"viewed");
+                if(!directory.isDirectory()&&!directory.mkdirs())throw new IOException("无法保存已读状态");
+                for(int i=0;i<requested.length();i++) {
+                    String name=requested.optString(i);
+                    if(!Studio.safe(name)||!new File(app.images,name).isFile())continue;
+                    File marker=new File(directory,name);
+                    try {
+                        if(marker.isFile()||marker.createNewFile())marked.put(name);
+                    } catch(IOException ignored) {}
+                }
+                return marked;
             }
             case "editPhoto": return importRef(ImageDecoder.createSource(fileFrom(d)));
             case "custom": app.prefs.edit().putString("custom",d.getJSONArray("list").toString()).commit();return true;
@@ -185,7 +195,12 @@ public class MainActivity extends Activity {
                 app.prefs.edit().remove("pendingRefs").apply();
                 return new JSONArray(pending);
             }
-            case "pick": runOnUiThread(()->openPicker(41,"refs",true));return true;
+            case "pick": {
+                int limit=Math.max(1,Math.min(14,d.optInt("limit",1)));
+                runOnUiThread(()->startActivityForResult(new Intent(this,AlbumActivity.class)
+                    .putExtra(AlbumActivity.LIMIT,limit),41));
+                return true;
+            }
             case "save": return export(fileFrom(d));
             case "share": {
                 File f=fileFrom(d);Uri uri=new Uri.Builder().scheme("content").authority("studio.yingxu.frame.pictures").appendPath(f.getName()).build();

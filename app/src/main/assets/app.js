@@ -28,7 +28,7 @@ const samples=[
 const navItems=[['create','创作台'],['gallery','作品集'],['tasks','任务'],['settings','设置']];
 const stateNames={queued:'排队中',sending:'生成中',fetching:'保存中',done:'已完成',partial:'部分成功',failed:'生成失败',not_sent:'请求未提交',uncertain:'响应中断',recovered:'已导入原图',download_error:'待补下载',cancelled:'已取消'};
 const active=s=>['queued','sending','fetching'].includes(s);
-const initial={mode:'text',prompt:'',refs:[],model:PROFILES[0].id,level:'2K',ratio:RATIOS[0],count:1,watermark:false,format:'auto',transparent:false,layers:false,layerMax:10};
+const initial={prompt:'',refs:[],model:PROFILES[0].id,level:'2K',ratio:RATIOS[0],ratioWidth:1,ratioHeight:1,count:1,watermark:false,format:'auto',transparent:false,layers:false,layerMax:10};
 let draft=Object.assign({},initial),config={models:[],custom:[],hasKey:false,synced:0},jobs=[],page='create',modal='',context='',previousPhotoTask='',sampleIndex=0,taskFilter='all',syncing=false,submitting=false,lastSyncError='',toastTimer,draftTimer,seq=0,refreshing=false;
 const calls=new Map();
 let jobRevision=-1;
@@ -63,28 +63,28 @@ function normalize(){
  const p=profile();
  if(!p.levels.includes(draft.level))draft.level=p.levels.includes('2K')?'2K':p.levels[0]||'';
  if(!RATIOS.includes(draft.ratio))draft.ratio=RATIOS[0];
- if(!p.layers||draft.mode!=='ref')draft.layers=false;
+ if(!p.layers||!draft.refs.length)draft.layers=false;
  if(!p.format)draft.format='auto';
- if(!p.rgba || draft.layers || (p.family!=='55' && (draft.mode!=='ref' || draft.refs.length!==1)))draft.transparent=false;
+ if(!p.rgba || draft.layers || (p.family!=='55' && (!draft.refs.length || draft.refs.length!==1)))draft.transparent=false;
  if(draft.transparent)draft.format='png';
  if(draft.layers)draft.count=1;
- draft.count=Math.max(1,Math.min(Number(draft.count)||1,p.batch?15-(draft.mode==='ref'?draft.refs.length:0):15));
+ draft.count=Math.max(1,Math.min(Number(draft.count)||1,p.batch?15-draft.refs.length:15));
  draft.layerMax=Math.max(2,Math.min(Number(draft.layerMax)||10,p.layers||100));
 }
 function body(){
- const p=profile(),size=requestSize(p,draft.level,draft.ratio);
- return {prompt:draft.prompt.trim(),model:draft.model,name:nameFor(draft.model),size:size,level:draft.level,ratio:draft.ratio,count:draft.count,stream:!!p.batch,separate:!p.batch&&!draft.layers,
- refs:draft.mode==='ref'?draft.refs.slice():[],watermark:draft.watermark,format:draft.format,transparent:draft.transparent,layers:draft.layers,
+ const p=profile(),size=requestSize(p,draft.level,draft.ratio,draft.ratioWidth,draft.ratioHeight);
+ return {prompt:draft.prompt.trim(),model:draft.model,name:nameFor(draft.model),size:size,level:draft.level,ratio:draft.ratio,ratioWidth:draft.ratioWidth,ratioHeight:draft.ratioHeight,count:draft.count,stream:!!p.batch,separate:!p.batch&&!draft.layers,
+ refs:draft.refs.slice(),watermark:draft.watermark,format:draft.format,transparent:draft.transparent,layers:draft.layers,
  layerMax:draft.layers?(p.family==='55'?draft.layerMax:p.layers):0,rate:{family:p.family,low:p.low,high:p.high,input:p.input,free:p.free}};
 }
 function date(t){return new Date(t).toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false});}
 function nav(){
- const counts={tasks:jobs.length,gallery:photos().filter(x=>!x.p.seen).length};
+ const counts={tasks:jobs.filter(j=>active(j.state)).length,gallery:photos().filter(x=>!x.p.seen).length};
  $('#nav').innerHTML=navItems.map(([key,label])=>{
   const count=counts[key]||0;
   const badge=count?'<span class="nav-count">'+(count>99?'99+':count)+'</span>':'';
   return button('nav','<span class="navicon">'+icon(key)+badge+'</span>'+label,page===key?'active':'',key,
-   'aria-label="'+label+(count?' '+count+(key==='gallery'?' 张未查看':' 个任务'):'')+'" '+(page===key?'aria-current="page"':''));
+   'aria-label="'+label+(count?' '+count+(key==='gallery'?' 张未查看':' 个进行中任务'):'')+'" '+(page===key?'aria-current="page"':''));
  }).join('');
 }
 function title(t,right){return '<div class="title"><h1>'+e(t)+'</h1>'+(right||'')+'</div>';}
@@ -93,13 +93,12 @@ function hero(){
  return '<div class="hero"><img src="art/'+s.img+'.jpg" alt="'+e(s.title)+'"><div class="hero-top"><span class="feature-label">'+icon('book')+'提示词灵感</span><div class="dots">'+samples.map((x,i)=>button('slide','',i===sampleIndex?'sel':'',i,'aria-label="查看'+e(x.title)+'"')).join('')+'</div></div><div class="hero-bottom"><div><h2>'+e(s.title)+'</h2><p>'+e(s.style)+'</p></div>'+button('sample',icon('upRight'),'circle',sampleIndex,'aria-label="查看并使用提示词"')+'</div></div>';
 }
 function refstrip(){
- return '<div class="refstrip">'+draft.refs.map((r,i)=>'<div class="refitem">'+button('refPhoto','<img src="refs/'+e(r)+'.thumb" alt="参考图 '+(i+1)+'">','ref-preview',r)+button('unref','×','ref-remove',i,'aria-label="移除参考图"')+'</div>').join('')+(draft.refs.length<allowedRefs()?button('pick',icon('plus')+'参考图','refslot'):'')+'</div>';
+ return '<div class="refstrip">'+draft.refs.map((r,i)=>'<div class="refitem">'+button('refPhoto','<img src="refs/'+e(r)+'.thumb" alt="参考图 '+(i+1)+'">','ref-preview',r)+button('unref','×','ref-remove',i,'aria-label="移除参考图"')+'</div>').join('')+(draft.refs.length<allowedRefs()?button('pick',icon('plus')+'<span class="ref-label">参考图</span>','refslot'):'')+'</div>';
 }
 function createPage(){
  normalize();const b=body(),total=cost(b,null);
  return '<div class="section-title"><h2>开始创作</h2>'+button('samples',icon('book')+' 灵感库','textbtn small')+'</div>'+
- '<div class="tabs">'+button('mode',icon('create')+'文生图',draft.mode==='text'?'active':'','text')+button('mode',icon('gallery')+'参考图生成',draft.mode==='ref'?'active':'','ref')+'</div>'+
- (draft.mode==='ref'?refstrip():'')+'<div class="workarea"><div class="promptbox"><div class="spread"><label for="prompt">画面描述</label><span>'+button('paste', '粘贴','textbtn','prompt')+' <span class="counter" id="chars">'+draft.prompt.length+' 字</span></span></div><textarea id="prompt" placeholder="写下主体、场景、光线，或你想修改的细节…">'+e(draft.prompt)+'</textarea></div>'+
+ refstrip()+'<div class="workarea"><div class="promptbox"><div class="spread"><label for="prompt">画面描述</label><span class="counter" id="chars">'+draft.prompt.length+' 字</span></div><textarea id="prompt" placeholder="写下主体、场景、光线，或你想修改的细节…">'+e(draft.prompt)+'</textarea></div>'+
  '<div class="right"><div class="gridparams">'+button('models','<span><small>生成模型</small><b>'+e(nameFor(draft.model))+'</b></span>'+icon('down'),'param')+
  button('params','<span><small>画布设置</small><b>'+e(b.layers?'图层拆分':b.size?b.ratio+' · '+b.level:'模型默认')+'</b></span>'+icon('down'),'param')+'</div>'+
  button('generate','<span class="inline">'+icon('spark')+'生成图片</span><span class="end">'+(total?'预计 '+money(total.total):'价格待核对')+'</span>','primary generate','',submitting?'disabled':'')+
@@ -110,7 +109,7 @@ function empty(ic,t,description){return '<div class="empty">'+icon(ic)+'<h3>'+e(
 function modelFilters(items,selected,action) {
  const models=new Map(items.map(j=>[j.body.model,j.body.name||nameFor(j.body.model)]));
  if(!models.size)return '';
- return '<div class="filter-row">'+[['','全部模型'],...models].map(([id,name])=>button(action,e(name),'choice'+(id===selected?' selected':''),id)).join('')+'</div>';
+ return '<div class="filter-row">'+[['',action==='galleryModel'?'全部':'全部模型'],...models].map(([id,name])=>button(action,e(name),'choice'+(id===selected?' selected':''),id)).join('')+'</div>';
 }
 function galleryPage(){
  const all=photos(),list=all.filter(x=>!galleryModel||x.j.body.model===galleryModel);
@@ -136,7 +135,7 @@ function tasksPage(){
  const visible=filteredTasks();
  const actions=selecting?'<div class="task-actions">'+button('pickFailed','全选失败','secondary')+
  button('deleteBatchAsk','删除 '+pickedTasks.size+' 项','dangerbtn','',pickedTasks.size?'':'disabled')+button('multi','取消','textbtn')+'</div>':'';
- return title('生成任务',jobs.length&&!selecting?button('multi','多选','textbtn'):'')+
+ return title('生成任务')+
  modelFilters(jobs,taskModel,'taskModel')+
  '<div class="seg">'+[['all','全部'],['active','处理中'],['issues','需关注']].map(x=>button('filter',x[1],taskFilter===x[0]?'active':'',x[0])).join('')+'</div>'+actions+
  '<div class="list">'+(visible.length?visible.map(taskCard).join(''):empty('tasks',jobs.length?'当前筛选下没有任务':'还没有生成任务','任务状态、原图和费用明细会在这里更新。'))+'</div>';
@@ -146,12 +145,53 @@ function settingsPage(){return title('设置')+'<div class="section-title"><h2>�
  row('custom','自定义推理接入点','添加 Endpoint ID 或新的 Model ID')+'<div class="section-title"><h2>使用与计费</h2></div>'+
  row('ledger','本机费用统计','按任务提交时的单价快照汇总')+row('doc','官方模型价格','查看火山方舟最新公布的计费规则','docs/model-pricing')+
  row('doc','错误码手册','按错误码排查权限、配额、请求参数等问题','docs/error-codes')+row('doc','图片生成指南','查看模型能力、参考图限制和调用示例','docs/image-generation-tutorial')+
- '<div class="panel"><h3>映序 · Frame Studio</h3><p class="sub">版本 1.1 · 火山方舟北京地域，标准按量 API。图片和任务记录保存在此设备。</p></div>';}
-function draw(){nav();$('#app').innerHTML=({create:createPage,gallery:galleryPage,tasks:tasksPage,settings:settingsPage}[page])();}
-function navigate(p){if(!navItems.some(n=>n[0]===p))return;close();if(p!=='tasks'){selecting=false;pickedTasks.clear();}page=p;draw();window.scrollTo(0,0);if(p==='tasks'||p==='gallery')refresh();}
+ '<div class="panel"><h3>映序 · Frame Studio</h3><p class="sub">版本 1.2 · 火山方舟北京地域，标准按量 API。图片和任务记录保存在此设备。</p></div>';}
+function animateIn(element) {
+ if(!element.animate || matchMedia('(prefers-reduced-motion: reduce)').matches)return;
+ const animation=element.animate([{opacity:0,transform:'translateY(9px)'},{opacity:1,transform:'translateY(0)'}],
+  {duration:190,easing:'cubic-bezier(.22,.61,.36,1)'});
+ animation.onfinish=scheduleSeen;
+}
+function draw(animate=false){
+ nav();
+ const view=$('#app');
+ view.innerHTML=({create:createPage,gallery:galleryPage,tasks:tasksPage,settings:settingsPage}[page])();
+ if(animate)animateIn(view);
+ scheduleSeen();
+}
+function navigate(p){
+ if(!navItems.some(n=>n[0]===p))return;
+ close();
+ if(p!=='tasks'){selecting=false;pickedTasks.clear();}
+ const changed=page!==p;
+ page=p;draw(changed);window.scrollTo(0,0);
+ if(p==='tasks'||p==='gallery')refresh();
+}
 window.navigate=navigate;
-function show(type,val){modal=type;context=val||'';renderModal();$('#overlay').hidden=false;$('#sheet').scrollTop=0;document.body.style.overflow='hidden';}
-function close(){modal='';context='';$('#overlay').hidden=true;document.body.style.overflow='';}
+let overlayTimer;
+function show(type,val){
+ const overlay=$('#overlay'),opening=overlay.hidden||overlay.classList.contains('is-closing');
+ clearTimeout(overlayTimer);
+ overlay.classList.remove('is-closing','is-opening');
+ modal=type;context=val||'';renderModal();
+ overlay.hidden=false;$('#sheet').scrollTop=0;document.body.style.overflow='hidden';
+ if(opening){void overlay.offsetWidth;overlay.classList.add('is-opening');}
+ else animateIn($('#sheet'));
+ scheduleSeen();
+}
+function close(){
+ const overlay=$('#overlay');
+ if(!modal)return;
+ modal='';context='';
+ overlay.classList.remove('is-opening');
+ overlay.classList.add('is-closing');
+ const duration=matchMedia('(prefers-reduced-motion: reduce)').matches?0:160;
+ function finish(){
+  overlay.hidden=true;overlay.classList.remove('is-closing');document.body.style.overflow='';
+  scheduleSeen();
+ }
+ if(duration)overlayTimer=setTimeout(finish,duration);else finish();
+}
 function entry(k,v){return '<div class="entry"><span>'+e(k)+'</span><span>'+e(v)+'</span></div>';}
 function sel(a,list,val){return '<div class="choices">'+list.map(x=>button(a,e(x),x===val?'choice selected':'choice',x)).join('')+'</div>';}
 function check(a,label,value){return '<label class="entry"><span>'+e(label)+'</span><input class="switch" type="checkbox" data-change="'+a+'" '+(value?'checked':'')+'></label>';}
@@ -167,17 +207,25 @@ function modelSheet(){
 function paramSheet(){
  const p=profile(),b=body();
  let controls=p.levels.length?group('分辨率',sel('level',p.levels,draft.level)):'<p class="notice">未知模型使用服务端默认尺寸。</p>';
- if(!draft.layers && p.levels.length)controls+=group('画面比例',sel('ratio',RATIOS,draft.ratio))+
- '<p class="sub">'+(draft.ratio===RATIOS[0]?'由模型按提示词选择比例。':e(b.size)+' 像素')+'</p>';
+ if(!draft.layers && p.levels.length){
+  controls+=group('画面比例',sel('ratio',RATIOS,draft.ratio));
+  if(draft.ratio==='自定义')controls+='<div class="ratio-fields"><label>宽 <input id="ratioWidth" type="number" min="1" step="1" value="'+e(draft.ratioWidth)+'"></label>'+
+   '<span aria-hidden="true">:</span><label>高 <input id="ratioHeight" type="number" min="1" step="1" value="'+e(draft.ratioHeight)+'"></label></div>';
+  controls+='<p class="sub" id="sizeHint">'+sizeHint(b)+'</p>';
+ }
  if(!draft.layers)controls+='<div class="entry"><span>生成张数</span><div class="countstep">'+
  button('step','−','',-1,'aria-label="减少张数" '+(draft.count<=1?'disabled':''))+
  '<output>'+draft.count+'</output>'+button('step','+','',1,'aria-label="增加张数" '+(draft.count>=(p.batch?15-b.refs.length:15)?'disabled':''))+'</div></div>'+
- (draft.count>1?'<p class="sub">'+(p.batch?'关联组图，实际张数可能少于所设上限。':'将排队发送 '+draft.count+' 个独立单图请求，费用按每个请求计算。')+'</p>':'');
- if(p.layers && draft.mode==='ref')controls+=check('layers','将单张参考图拆分为图层',draft.layers);
+ (draft.count>1&&p.batch?'<p class="sub">关联组图，实际张数可能少于所设上限。</p>':'');
+ if(p.layers && draft.refs.length)controls+=check('layers','将单张参考图拆分为图层',draft.layers);
  if(draft.layers && p.family==='55')controls+=group('最大输出张数（含底图，2–100）','<input type="number" id="layerMax" min="2" max="100" value="'+draft.layerMax+'">');
  if(p.format && !draft.layers)controls+=group('输出格式','<div class="choices">'+[['auto','默认'],['jpeg','JPEG'],['png','PNG']].map(x=>button('format',x[1],'choice'+(draft.format===x[0]?' selected':''),x[0])).join('')+'</div>');
- if(p.rgba && !draft.layers && (p.family==='55'||(draft.mode==='ref'&&draft.refs.length===1)))controls+=check('transparent','透明背景 PNG',draft.transparent)+(p.family==='55'?'':'<p class="sub">此模型需要一张带透明通道的 PNG 参考图。</p>');
+ if(p.rgba && !draft.layers && (p.family==='55'||draft.refs.length===1))controls+=check('transparent','透明背景 PNG',draft.transparent)+(p.family==='55'?'':'<p class="sub">此模型需要一张带透明通道的 PNG 参考图。</p>');
  return controls+check('watermark','显示 AI 生成水印',draft.watermark)+button('apply','完成','primary wide');
+}
+function sizeHint(b) {
+ if(b.ratio===RATIOS[0])return '由模型按提示词选择比例。';
+ return b.size?e(b.size)+' 像素':'请输入有效的宽高比例（1:16 至 16:1）。';
 }
 function lines(b,r){const c=cost(b,r);return entry('参考图费用',c?money(c.input):'待核价')+entry(r?'输出图片':'最多输出',c?c.count+' 张 · '+money(c.output):'待核价')+entry(r?'按用量估算合计':'预计最高费用',c?money(c.total):'待核价');}
 function taskSheet(j){
@@ -191,9 +239,9 @@ function taskSheet(j){
   const stage=r.phase==='awaiting'||r.phase==='response'?'手机已发送请求体，方舟可能已出图并计费。':
    r.phase==='uploading'?'上传期间连接中断，无法判断方舟是否收到完整请求。':'记录缺少完整的发送或响应阶段，请查方舟账单核对实际用量。';
   info+=entry('客户端请求编号',j.id)+'<p class="problem">'+stage+' 方舟图片 API 在原响应中返回图片。可按时间和模型核对账单，已有日志投递时可用请求编号查 TLS 日志。</p>'+
-   '<div class="buttons">'+button('doc','查看方舟账单','secondary','usage')+button('doc','单请求对账指引','secondary','request-usage')+
+   '<div class="buttons">'+button('doc','查看账单','secondary','usage')+button('doc','单次对账指引','secondary','request-usage')+
    button('doc','查看日志指引','secondary','docs/log-collection')+button('doc','TOS 转存指引','secondary','tos')+'</div>';
-  if(['uncertain','partial','recovered'].includes(j.state))info+='<div class="buttons">'+button('restorePhoto','导入找回的原图','secondary',j.id)+button('restoreLink','下载找回的链接','secondary',j.id)+'</div>';
+  if(['uncertain','partial','recovered'].includes(j.state))info+='<div class="buttons">'+button('restorePhoto','导入原图','secondary',j.id)+button('restoreLink','下载原图链接','secondary',j.id)+'</div>';
  }
  if(j.state==='download_error')info+='<p class="problem">方舟已返回图片。本机可以在临时链接有效期内重新下载，补下载不会再次生成。</p>';
  if(r.message)info+='<p class="problem">'+e(r.message)+'</p>';
@@ -233,8 +281,8 @@ function modalContent(){
   if(!it)return ['作品预览','原图不可用'];
   return ['作品预览',imageViewer('images/'+context,'生成原图')+entry('尺寸',it.p.size)+entry('模型',it.j.body.name)+
    (it.p.name?entry('图层',it.p.name):'')+
-   '<div class="buttons">'+button('editPhoto',icon('create')+'编辑图片','primary',context)+button('reuse',icon('sync')+'复用参数','secondary',it.j.id)+
-   button('save',icon('save')+'保存到相册','secondary',context)+button('share',icon('share')+'分享原图','secondary',context)+'</div>'+
+   '<div class="buttons">'+button('editPhoto',icon('create')+'<span class="action-label">编辑图片</span>','primary',context)+button('reuse',icon('sync')+'<span class="action-label">复用参数</span>','secondary',it.j.id)+
+   button('save',icon('save')+'<span class="action-label">保存到相册</span>','secondary',context)+button('share',icon('share')+'<span class="action-label">分享原图</span>','secondary',context)+'</div>'+
    '<details class="preview-meta"><summary>查看提示词和生成参数</summary>'+photoParams(it.j.body)+'</details>'];
  }
  case 'editPhoto':return ['编辑图片',group('编辑提示词','<textarea id="editPrompt" class="edit-prompt" placeholder="描述要修改的内容"></textarea>')+
@@ -246,7 +294,7 @@ function modalContent(){
 function photoParams(b){
  return '<p class="summary">'+e(b.prompt||'按图片内容自动拆分图层')+'</p>'+
  entry('模型 ID',b.model)+entry('请求尺寸',b.layers?b.level:b.size||'模型默认')+
- entry('画面比例',b.layers?'参考图比例':b.ratio||'模型默认')+
+ entry('画面比例',b.layers?'参考图比例':b.ratio==='自定义'?b.ratioWidth+':'+b.ratioHeight:b.ratio||'模型默认')+
  entry('生成方式',b.layers?'图层拆分':b.refs.length?'参考图生成':'文生图')+
  entry('参考图',b.refs.length+' 张')+entry('输出张数'+(b.layers?'上限':''),b.layers?b.layerMax:b.count)+
  entry('输出格式',b.format==='auto'||!b.format?'模型默认':b.format.toUpperCase())+
@@ -281,18 +329,65 @@ async function refresh(){
  } catch(err){toast(err.message);}
  finally{refreshing=false;}
 }
-async function markViewed(file) {
- const found=photos().find(x=>x.p.file===file);
- if(!found||found.p.seen)return;
- await api('readPhoto',{file});
- for(const x of photos())if(x.p.file===file)x.p.seen=true;
- if(page==='gallery')draw();else nav();
+const reading=new Set();
+let seenFrame=0;
+function scheduleSeen(){
+ if(!seenFrame)seenFrame=requestAnimationFrame(checkVisiblePhotos);
 }
+function checkVisiblePhotos(){
+ seenFrame=0;
+ if(document.hidden)return;
+ const overlay=$('#overlay');
+ const showingPhoto=!overlay.hidden&&modal==='photo';
+ if(!showingPhoto && (page!=='gallery'||!overlay.hidden))return;
+ const frame=window.visualViewport;
+ const viewport={left:frame?frame.offsetLeft:0,top:frame?frame.offsetTop:0,
+  right:frame?frame.offsetLeft+frame.width:innerWidth,bottom:frame?frame.offsetTop+frame.height:innerHeight};
+ if(showingPhoto){
+  const sheet=$('#sheet').getBoundingClientRect();
+  viewport.top=Math.max(viewport.top,sheet.top);
+  viewport.bottom=Math.min(viewport.bottom,sheet.bottom);
+ }else viewport.bottom=Math.min(viewport.bottom,$('#nav').getBoundingClientRect().top);
+ const images=showingPhoto?document.querySelectorAll('#sheet .viewer img'):document.querySelectorAll('.photo .unseen-dot + img');
+ const files=[];
+ for(const image of images){
+  const area=image.getBoundingClientRect();
+  if(!showingPhoto&&area.top>viewport.bottom)break;
+  if(!image.complete||!image.naturalWidth||area.width<=0||area.height<=0)continue;
+  if(area.top<viewport.top-.5||area.bottom>viewport.bottom+.5||area.left<viewport.left-.5||area.right>viewport.right+.5)continue;
+  const file=showingPhoto?context:image.closest('.photo').dataset.val;
+  if(file&&!reading.has(file))files.push(file);
+ }
+ if(files.length)markViewed(files).catch(()=>{});
+}
+async function markViewed(files) {
+ const pending=new Set(files);
+ const unseen=photos().filter(x=>pending.has(x.p.file)&&!x.p.seen&&!reading.has(x.p.file));
+ if(!unseen.length)return;
+ const ids=unseen.map(x=>x.p.file);
+ for(const id of ids)reading.add(id);
+ try{
+  const completed=new Set(await api('readPhotos',{files:ids}));
+  for(const x of photos())if(completed.has(x.p.file))x.p.seen=true;
+  for(const card of document.querySelectorAll('.photo')){
+   if(!completed.has(card.dataset.val))continue;
+   const dot=card.querySelector('.unseen-dot');
+   if(dot)dot.remove();
+  }
+  nav();
+ } finally {
+  for(const id of ids)reading.delete(id);
+ }
+}
+window.addEventListener('scroll',scheduleSeen,{passive:true,capture:true});
+window.addEventListener('resize',scheduleSeen,{passive:true});
+document.addEventListener('load',event=>{if(event.target.tagName==='IMG')scheduleSeen();},true);
+document.addEventListener('animationend',scheduleSeen);
 function updateModels(result) {
  if(config.synced===result.synced)return;
  config.models=result.models;config.synced=result.synced;
  const list=options();
- if(!list.some(m=>m.id===draft.model))draft.model=list.length?list[0].id:'';
+ if(!list.some(m=>m.id===draft.model))setDraftModel(list.length?list[0].id:'');
  if(page!=='create'||document.activeElement!==$('#prompt'))draw();
  if(modal==='models')renderModal();
  saveDraft();
@@ -312,9 +407,10 @@ async function sync(showList){
  catch(err){lastSyncError=err.message;if(!showList)toast('模型同步失败，可在模型列表查看详情');}
  finally{syncing=false;if(modal==='models')renderModal();}
 }
-function changeModel(id){draft.model=id;draft.layers=false;draft.transparent=false;draft.format='auto';normalize();close();draw();saveDraft();}
+function setDraftModel(id){if(id!==draft.model){draft.model=id;draft.count=1;}}
+function changeModel(id){setDraftModel(id);draft.layers=false;draft.transparent=false;draft.format='auto';normalize();close();draw();saveDraft();}
 window.addReferences=function(names,failed){
- draft.mode='ref';const n=Math.max(0,allowedRefs()-draft.refs.length);draft.refs=draft.refs.concat(names.slice(0,n));normalize();redraw();
+ const n=Math.max(0,allowedRefs()-draft.refs.length);draft.refs=draft.refs.concat(names.slice(0,n));normalize();redraw();
  if(failed||names.length>n)toast(failed?'部分图片格式或宽高比不支持':'已达到当前模型参考图上限');
 };
 window.receiveReferences=async function(failed){try{const refs=await api('pendingRefs');if(refs.length||failed)window.addReferences(refs,failed);}catch(err){toast(err.message);}};
@@ -325,7 +421,8 @@ async function generate(){
  if(!draft.prompt.trim()&&!draft.layers){toast('先写下想生成的画面');$('#prompt').focus();return;}
  if(!config.hasKey){show('key');return;}
  if(!draft.model || !options().some(o=>o.id===draft.model)){show('models');return;}
- if(draft.mode==='ref' && (!draft.refs.length || draft.refs.length>allowedRefs())){toast('请选取 1 至 '+allowedRefs()+' 张参考图');return;}
+ if(draft.refs.length>allowedRefs()){toast('请选取 1 至 '+allowedRefs()+' 张参考图');return;}
+ if(!draft.layers&&draft.ratio==='自定义'&&profile().levels.length&&!body().size){show('params');toast('请检查自定义比例');return;}
  submitting=true;draw();
  try{await api('draft',draft);const b=body();await api('submit',{id:idForRequest(),body:b});taskFilter='all';await refresh();toast('任务已加入队列');}
  finally{submitting=false;if(page==='create')draw();}
@@ -342,10 +439,9 @@ async function act(a,v){
  case 'connection':show('key');break;
  case 'close':studioBack();break;
  case 'slide':sampleIndex=Number(v);renderModal();break;
- case 'mode':draft.mode=v;redraw();break;
  case 'useSample':draft.prompt=samples[Number(v)||0].prompt;close();redraw();toast('已填入画面描述');break;
  case 'models':case 'params':case 'key':case 'cost':case 'sample':case 'samples':case 'ledger':case 'deleteAsk':case 'custom':case 'removeCustom':case 'forgetAsk':show(a,v);break;
- case 'photo':previousPhotoTask=modal==='task'?context:'';show('photo',v);await markViewed(v);break;
+ case 'photo':previousPhotoTask=modal==='task'?context:'';show('photo',v);break;
  case 'refPhoto':case 'editPhoto':case 'restoreLink':case 'deleteBatchAsk':show(a,v);break;
  case 'galleryModel':galleryModel=v;draw();break;
  case 'taskModel':taskModel=v;pickedTasks.clear();draw();break;
@@ -369,7 +465,7 @@ async function act(a,v){
   const item=photos().find(x=>x.p.file===v);
   if(!item)throw new Error('原图不可用');
   const ref=await api('editPhoto',{file:v});
-  draft=Object.assign({},initial,item.j.body,{prompt,refs:[ref],mode:'ref',count:1,watermark:false,layers:false,transparent:false});
+  draft=Object.assign({},initial,item.j.body,{prompt,refs:[ref],count:1,watermark:false,layers:false,transparent:false});
   navigate('create');redraw();$('#prompt').focus();break;
  }
  case 'paste':{
@@ -383,7 +479,7 @@ async function act(a,v){
  case 'filter':taskFilter=v;pickedTasks.clear();draw();break;
  case 'level':case 'ratio':case 'format':draft[a]=v;if(a==='format'&&v!=='png')draft.transparent=false;redraw();break;
  case 'step':draft.count+=Number(v);redraw();break;
- case 'apply':close();redraw();break;
+ case 'apply':if(!draft.layers&&draft.ratio==='自定义'&&profile().levels.length&&!body().size){toast('请检查自定义比例');break;}close();redraw();break;
  case 'sync':await sync(true);break;
  case 'chooseModel':changeModel(v);break;
  case 'saveKey':{const key=$('#secret').value.trim();if(!key)throw new Error('请填写 API Key');await api('key',{key:key});config.hasKey=true;config.models=[];config.synced=0;lastSyncError='';nav();await sync(true);break;}
@@ -394,12 +490,12 @@ async function act(a,v){
   if(family==='generic' && fee && (!/^\d+(\.\d{1,2})?$/.test(fee)||Number(fee)>10000))throw new Error('单价应为 0 至 10000 元，最多两位小数');
   const list=config.custom.filter(x=>x.id!==id).concat([{id:id,name:name,family:family,cents:fee?Math.round(Number(fee)*100):null}]);
   await api('custom',{list:list});config.custom=list;changeModel(id);toast('已保存并选用接入点');break;}
- case 'doRemove':{const list=config.custom.filter((_,i)=>i!==Number(v));await api('custom',{list:list});config.custom=list;if(!options().some(m=>m.id===draft.model))draft.model=(options()[0]||{}).id||'';show('custom');redraw();break;}
- case 'pick':await api('pick');break;
+ case 'doRemove':{const list=config.custom.filter((_,i)=>i!==Number(v));await api('custom',{list:list});config.custom=list;if(!options().some(m=>m.id===draft.model))setDraftModel((options()[0]||{}).id||'');show('custom');redraw();break;}
+ case 'pick':await api('draft',draft);await api('pick',{limit:allowedRefs()-draft.refs.length});break;
  case 'unref':draft.refs.splice(Number(v),1);redraw();break;
  case 'doc':await api('open',{page:v});break;
  case 'generate':await generate();break;
- case 'reuse':{const j=jobs.find(x=>x.id===v);if(!j)break;const b=j.body;draft=Object.assign({},initial,b,{refs:b.refs.slice(),mode:b.refs.length?'ref':'text'});navigate('create');redraw();toast('参数已填入，确认后可再次生成');break;}
+ case 'reuse':{const j=jobs.find(x=>x.id===v);if(!j)break;const b=j.body;const count=b.model===draft.model?b.count:1;draft=Object.assign({},initial,b,{refs:b.refs.slice(),count});navigate('create');redraw();toast('参数已填入，确认后可再次生成');break;}
  case 'save':await api('save',{file:v});toast('已保存到系统相册 · Pictures/映序');break;
  case 'share':await api('share',{file:v});break;
  case 'cancel':if(!await api('cancel',{id:v}))toast('任务已开始处理');await refresh();break;
@@ -434,15 +530,22 @@ document.addEventListener('click',event=>{
  act(b.dataset.act,b.dataset.val).catch(feedback);
 });
 window.restoredPhoto=async function(){await refresh();toast('原图已导入作品集');};
-document.addEventListener('input',event=>{if(event.target.id==='prompt'){draft.prompt=event.target.value;$('#chars').textContent=draft.prompt.length+' 字';saveDraft();}});
+document.addEventListener('input',event=>{
+ const field=event.target;
+ if(field.id==='prompt'){
+  draft.prompt=field.value;$('#chars').textContent=draft.prompt.length+' 字';saveDraft();
+ }else if(field.id==='ratioWidth'||field.id==='ratioHeight'){
+  draft[field.id]=field.value;$('#sizeHint').textContent=sizeHint(body());saveDraft();
+ }
+});
 document.addEventListener('change',event=>{
  const t=event.target,a=t.dataset.change;
  if(a){draft[a]=t.checked;redraw();}
  if(t.id==='layerMax'){draft.layerMax=Math.min(100,Math.max(2,Number(t.value)||2));redraw();}
 });
 document.addEventListener('keydown',event=>{if(event.key==='Escape'&&modal)studioBack();});
-async function boot(){draw();try{const data=await api('init');config=Object.assign(config,data);draft=Object.assign({},initial,data.draft);if(!data.draft.defaultsV2){draft.watermark=false;draft.defaultsV2=true;saveDraft();}draw();await window.receiveReferences(0);await refresh();dailySync();}catch(err){toast(err.message);}}
+async function boot(){draw();try{const data=await api('init');config=Object.assign(config,data);draft=Object.assign({},initial,data.draft,{count:1});if(draft.mode==='text')draft.refs=[];delete draft.mode;if(!data.draft.defaultsV2){draft.watermark=false;draft.defaultsV2=true;saveDraft();}draw();await window.receiveReferences(0);await refresh();dailySync();}catch(err){toast(err.message);}}
 setInterval(()=>{if(!document.hidden&&(jobs.some(j=>active(j.state))||page==='tasks'||page==='gallery'))refresh();},2000);
-document.addEventListener('visibilitychange',()=>{if(!document.hidden){refresh();dailySync();}else if(draftTimer)api('draft',draft).catch(()=>{});});
+document.addEventListener('visibilitychange',()=>{if(!document.hidden){refresh();dailySync();scheduleSeen();}else if(draftTimer)api('draft',draft).catch(()=>{});});
 setInterval(()=>{if(!document.hidden)dailySync();},60000);
 boot();

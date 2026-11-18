@@ -47,3 +47,20 @@ test('intelligent aspect ratio passes a tier and separate jobs count each refere
     assert.deepEqual(cost(body,null),{input:15,output:39,count:3,total:54});
     assert.equal(requestSize(PROFILES[3],'2K','16:9'),'2848x1600');
 });
+
+test('new official presets use the corresponding model-tier dimensions', () => {
+    assert.equal(requestSize(PROFILES[0],'1.5K','3:2'),'1872x1248');
+    assert.equal(requestSize(PROFILES[4],'4K','2:3'),'3328x4992');
+    assert.equal(requestSize(PROFILES[5],'1K','21:9'),'1512x648');
+});
+test('custom ratios have exact integer proportions within the model limits', () => {
+    for(const profile of PROFILES){
+        const size=requestSize(profile,profile.levels[0],'自定义',9,21);
+        const [width,height]=size.split('x').map(Number);
+        assert.equal(width*21,height*9);
+        assert.ok(width*height>=(['lite','45'].includes(profile.family)?3686400:921600));
+        assert.ok(width*height<=(profile.batch?16777216:4624220));
+    }
+    assert.equal(requestSize(PROFILES[0],'2K','自定义',17,1),'');
+    assert.equal(requestSize(PROFILES[0],'2K','自定义',1,0),'');
+});

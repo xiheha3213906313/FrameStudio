@@ -8,8 +8,16 @@ const PROFILES = [
  {id:'doubao-seedream-4-0-250828',family:'40',name:'Seedream 4.0',levels:['1K','2K','4K'],refs:14,batch:true,low:20,high:20,input:0,free:0}
 ];
 const GENERIC={family:'generic',levels:[],name:'自定义模型',refs:1,low:null,high:null,input:null,free:0};
-const RATIOS=['智能比例','1:1','4:3','3:4','16:9','9:16'];
-const SIZES={'1K':['1024x1024','1152x864','864x1152','1424x800','800x1424'],'1.5K':['1536x1536','1792x1344','1344x1792','2048x1152','1152x2048'],'2K':['2048x2048','2368x1776','1776x2368','2816x1584','1584x2816'],'3K':['3072x3072','3456x2592','2592x3456','4096x2304','2304x4096'],'4K':['4096x4096','4704x3520','3520x4704','5504x3040','3040x5504']};
+const RATIOS=['智能比例','1:1','4:3','3:4','16:9','9:16','3:2','2:3','21:9','自定义'];
+const SIZES={
+ '1K':['1024x1024','1152x864','864x1152','1424x800','800x1424','1248x832','832x1248','1568x672'],
+ '1.5K':['1536x1536','1792x1344','1344x1792','2048x1152','1152x2048','1872x1248','1248x1872','2352x1008'],
+ '2K':['2048x2048','2368x1776','1776x2368','2816x1584','1584x2816','2496x1664','1664x2496','3136x1344'],
+ '3K':['3072x3072','3456x2592','2592x3456','4096x2304','2304x4096','3744x2496','2496x3744','4704x2016'],
+ '4K':['4096x4096','4704x3520','3520x4704','5504x3040','3040x5504','4992x3328','3328x4992','6240x2656']
+};
+const LEGACY_1K=['1024x1024','1152x864','864x1152','1280x720','720x1280','1248x832','832x1248','1512x648'];
+const LEGACY_2K=['2048x2048','2304x1728','1728x2304','2848x1600','1600x2848','2496x1664','1664x2496','3136x1344'];
 function modelFamilyKey(value) {
  return String(value||'').trim().toLowerCase().replace(/^doubao[ -]/,'').replace(/[. ]/g,'-').replace(/-\d{6}$/,'');
 }
@@ -34,12 +42,28 @@ function priceLabel(profile) {
  const out=money(profile.low)+(profile.high!==profile.low?'–'+money(profile.high):'')+'/张';
  return profile.input?out+' · '+(profile.free?'首张参考图免费，之后 ':'参考图 ')+money(profile.input)+'/张':out+' · 参考图免费';
 }
-function requestSize(profile,level,ratio) {
- if(!profile.levels.length)return '';
+function requestSize(profile,level,ratio,width=1,height=1) {
+ if(!profile.levels.includes(level))return '';
  if(ratio===RATIOS[0])return level;
- if(level==='2K' && ['lite','45','40'].includes(profile.family))
-  return ['2048x2048','2304x1728','1728x2304','2848x1600','1600x2848'][RATIOS.indexOf(ratio)-1];
- return SIZES[level][RATIOS.indexOf(ratio)-1];
+ if(ratio==='自定义'){
+  let w=Number(width),h=Number(height);
+  if(!Number.isSafeInteger(w)||!Number.isSafeInteger(h)||w<1||h<1||w/h<1/16||w/h>16)return '';
+  let a=w,b=h;
+  while(b!==0){const next=a%b;a=b;b=next;}
+  w/=a;h/=a;
+  const min=['lite','45'].includes(profile.family)?3686400:921600;
+  const max=profile.batch?16777216:4624220;
+  const area=w*h;
+  const smallest=Math.ceil(Math.sqrt(min/area)),largest=Math.floor(Math.sqrt(max/area));
+  if(smallest>largest)return '';
+  const multiple=Math.max(smallest,Math.min(largest,Math.round(Math.sqrt(pixels(SIZES[level][0])/area))));
+  return (w*multiple)+'x'+(h*multiple);
+ }
+ const slot=RATIOS.indexOf(ratio)-1;
+ if(slot<0)return '';
+ if(level==='1K' && profile.family==='40')return LEGACY_1K[slot];
+ if(level==='2K' && profile.batch)return LEGACY_2K[slot];
+ return SIZES[level][slot]||'';
 }
 function pixels(size){const parts=String(size||'').split(/[x×]/).map(Number);return parts.length===2 && parts.every(n=>n>0)?parts[0]*parts[1]:0;}
 function unit(rule,size,layers){

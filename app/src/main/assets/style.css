@@ -11,7 +11,7 @@ textarea,input,select{-webkit-user-select:text;user-select:text}
 img{-webkit-user-drag:none}
 #app{padding-top:1px}.section-title{margin-top:18px}
 .promptbox .spread{min-height:24px}.promptbox textarea{resize:none;min-height:116px}
-.refslot,.refitem{width:68px;height:68px;min-width:68px;min-height:68px}
+.refslot,.refitem{width:74px;height:74px;min-width:74px;min-height:74px}
 .refitem .ref-preview{width:100%;height:100%;border-radius:8px;background:none;overflow:hidden;position:static}
 .refitem .ref-remove{z-index:1}
 .navicon{position:relative}.nav-count{position:absolute;top:-5px;left:calc(50% + 7px);border-radius:20px;padding:1px 4px;min-width:15px;text-align:center;background:var(--clay);color:white;font:700 10px/13px system-ui;border:1px solid var(--paper)}
@@ -22,9 +22,34 @@ img{-webkit-user-drag:none}
 .photo{position:relative}.unseen-dot{position:absolute;top:9px;right:9px;background:var(--clay);border:2px solid white;width:11px;height:11px;border-radius:50%}
 .viewer{width:100%;height:min(52vh,530px);background:#272622;border-radius:12px;overflow:hidden;position:relative;touch-action:none;display:grid;place-items:center;outline-offset:3px}
 .viewer img{width:100%;height:100%;position:absolute;inset:0;object-fit:contain;transform-origin:center;pointer-events:none;will-change:transform}
-.viewer-controls{display:flex;align-items:center;justify-content:flex-end;gap:7px;padding-top:8px}
-.viewer-controls button{min-width:42px;min-height:34px;padding:4px 9px}
 .preview-meta{margin-top:12px}.preview-meta summary{padding:12px 0;font-weight:700;cursor:pointer}.summary{overflow-wrap:anywhere}
 .inspiration-layout{display:grid;gap:10px;margin-top:12px}
 #sheet .hero{margin-top:6px}#sheet .hero .dots button{min-width:30px}
 .edit-prompt{width:100%;min-height:100px;border:1px solid var(--line);border-radius:10px;background:var(--card);padding:12px;resize:vertical;font:inherit;color:inherit}
+
+/* Keep action labels horizontal at small widths and increased text sizes. */
+button{writing-mode:horizontal-tb;word-break:normal;overflow-wrap:normal}
+.refslot{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;padding:4px}
+.refslot .ic{margin:0}
+.ref-label{white-space:nowrap;line-height:1.2}
+.buttons{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}
+.buttons>button{min-width:0;min-height:46px;padding:9px 8px;line-height:1.25;text-align:center}
+.buttons>button .ic{margin-right:5px}
+.action-label{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden}
+.task-actions>button{white-space:nowrap;padding:8px 9px}
+.ratio-fields{display:flex;align-items:center;gap:9px}
+.ratio-fields label{flex:1;min-width:0;font-size:12px;color:var(--muted)}
+@media(max-width:290px){.buttons{grid-template-columns:1fr}}
+
+button{transition:background-color .15s ease,opacity .15s ease,border-color .15s ease}
+#overlay.is-opening .scrim{animation:backdrop-in .19s ease-out both}
+#overlay.is-opening #sheet{animation:sheet-in .2s cubic-bezier(.22,.61,.36,1) both}
+#overlay.is-closing{pointer-events:none}
+#overlay.is-closing .scrim{animation:backdrop-in .16s ease-in reverse both}
+#overlay.is-closing #sheet{animation:sheet-out .16s ease-in both}
+@keyframes backdrop-in{from{opacity:0}to{opacity:1}}
+@keyframes sheet-in{from{opacity:0;transform:translateY(26px)}to{opacity:1;transform:translateY(0)}}
+@keyframes sheet-out{from{opacity:1;transform:translateY(0)}to{opacity:0;transform:translateY(22px)}}
+@media(prefers-reduced-motion:reduce){
+ button,#overlay .scrim,#overlay #sheet{animation:none!important;transition:none!important}
+}
