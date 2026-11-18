@@ -1,15 +1,19 @@
 package studio.yingxu.frame;
 
+import android.animation.ArgbEvaluator;
+import android.animation.ValueAnimator;
 import android.app.*;
 import android.content.*;
 import android.graphics.*;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.provider.MediaStore;
 import android.view.*;
 import android.webkit.*;
 import org.json.*;
 import java.io.*;
+import java.security.MessageDigest;
 import java.util.*;
 import java.util.concurrent.*;
 
@@ -20,6 +24,10 @@ public class MainActivity extends Activity {
     private final ExecutorService io=Executors.newSingleThreadExecutor(), network=Executors.newSingleThreadExecutor();
     private String picker="";
     private boolean ready, showTasks;
+    private boolean keyboardVisible;
+    private ValueAnimator barAnimator;
+    private ViewTreeObserver.OnGlobalLayoutListener keyboardLayout;
+    private final Map<String,String> referenceKeys=new HashMap<>();
     @Override public void onCreate(Bundle state) {
         super.onCreate(state); app=(Studio)getApplication();
         showTasks=getIntent().getBooleanExtra("tasks",false);
@@ -51,7 +59,9 @@ public class MainActivity extends Activity {
             }
             @Override public void onPageFinished(WebView w,String url){ready=true;if(showTasks){js("window.navigate('tasks')");showTasks=false;}}
         });
-        view.addJavascriptInterface(new Bridge(),"StudioNative");setContentView(view);view.loadUrl(HOME);
+        view.addJavascriptInterface(new Bridge(),"StudioNative");setContentView(view);
+        observeKeyboard();
+        view.loadUrl(HOME);
         ModelSync.schedule(app);
         if(app.db.next()!=null) app.wake();
         io.execute(()->pruneRefs());
@@ -70,7 +80,52 @@ public class MainActivity extends Activity {
     @Override public void onBackPressed(){
         view.evaluateJavascript("window.studioBack ? window.studioBack() : false",v->{if(!"true".equals(v))super.onBackPressed();});
     }
-    @Override public void onDestroy(){ready=false;io.shutdown();network.shutdown();view.removeJavascriptInterface("StudioNative");view.destroy();super.onDestroy();}
+    private void observeKeyboard() {
+        if(Build.VERSION.SDK_INT>=30) {
+            view.setOnApplyWindowInsetsListener((v,insets)->{
+                setKeyboardVisible(insets.isVisible(WindowInsets.Type.ime()));
+                return v.onApplyWindowInsets(insets);
+            });
+            view.requestApplyInsets();
+        } else {
+            Rect visibleArea=new Rect();
+            View root=view.getRootView();
+            keyboardLayout=()->{
+                root.getWindowVisibleDisplayFrame(visibleArea);
+                int height=root.getHeight();
+                int cutoff=Math.round(125*getResources().getDisplayMetrics().density);
+                setKeyboardVisible(height>0 && height-visibleArea.height()>cutoff);
+            };
+            view.getViewTreeObserver().addOnGlobalLayoutListener(keyboardLayout);
+        }
+    }
+    private void setKeyboardVisible(boolean visible) {
+        if(keyboardVisible && !visible) {
+            view.postDelayed(()->{
+                if(!keyboardVisible && !isDestroyed())js("window.blurInputs && window.blurInputs()");
+            },80);
+        }
+        keyboardVisible=visible;
+    }
+    private void setModalChrome(boolean dimmed) {
+        Window window=getWindow();
+        if(barAnimator!=null)barAnimator.cancel();
+        int end=dimmed?0xff93948f:0xfff8f7f3;
+        barAnimator=ValueAnimator.ofObject(new ArgbEvaluator(),window.getStatusBarColor(),end);
+        barAnimator.setDuration(200);
+        barAnimator.addUpdateListener(animation->window.setStatusBarColor((Integer)animation.getAnimatedValue()));
+        barAnimator.start();
+    }
+    @Override public void onDestroy(){
+        ready=false;
+        io.shutdown();
+        network.shutdown();
+        if(barAnimator!=null)barAnimator.cancel();
+        if(keyboardLayout!=null)view.getViewTreeObserver().removeOnGlobalLayoutListener(keyboardLayout);
+        view.removeJavascriptInterface("StudioNative");
+        view.destroy();
+        super.onDestroy();
+    }
     private void js(String script){runOnUiThread(()->{if(!isDestroyed() && !isFinishing()) view.evaluateJavascript(script,null);});}
     private void reply(String id,boolean ok,Object value){
         js("window.nativeReply("+JSONObject.quote(id)+","+ok+","+JSONObject.quote(String.valueOf(value))+")");
@@ -79,6 +134,14 @@ public class MainActivity extends Activity {
     private class Bridge {
         @JavascriptInterface public void call(String id,String action,String raw) {
             if(isDestroyed())return;
+            if("modalChrome".equals(action)) {
+                boolean dimmed=Studio.json(raw).optBoolean("dimmed");
+                runOnUiThread(()->{
+                    if(!isDestroyed())setModalChrome(dimmed);
+                    reply(id,true,true);
+                });
+                return;
+            }
             if("paste".equals(action)) {
                 runOnUiThread(()->{
                     ClipboardManager clipboard=getSystemService(ClipboardManager.class);
@@ -130,7 +193,10 @@ public class MainActivity extends Activity {
                 if(d.optLong("since",-1)==rev)return JSONObject.NULL;
                 JSONArray rows=app.db.all();
                 for(int i=0;i<rows.length();i++) {
-                    JSONArray imgs=rows.getJSONObject(i).getJSONObject("result").optJSONArray("images");
+                    JSONObject row=rows.getJSONObject(i);
+                    if(Arrays.asList("failed","not_sent","uncertain","download_error").contains(row.optString("state")))
+                        row.put("refKeys",referenceKeys(row.getJSONObject("body").optJSONArray("refs")));
+                    JSONArray imgs=row.getJSONObject("result").optJSONArray("images");
                     for(int k=0;imgs!=null && k<imgs.length();k++) {
                         JSONObject image=imgs.getJSONObject(k);
                         image.remove("url");
@@ -197,8 +263,7 @@ public class MainActivity extends Activity {
             }
             case "pick": {
                 int limit=Math.max(1,Math.min(14,d.optInt("limit",1)));
-                runOnUiThread(()->startActivityForResult(new Intent(this,AlbumActivity.class)
-                    .putExtra(AlbumActivity.LIMIT,limit),41));
+                runOnUiThread(()->openReferencePicker(limit));
                 return true;
             }
             case "save": return export(fileFrom(d));
@@ -244,6 +309,40 @@ public class MainActivity extends Activity {
         }
         if(count>0){app.db.revision.incrementAndGet();pruneRefs();}
         return count;
+    }
+    private JSONArray referenceKeys(JSONArray refs) {
+        JSONArray keys=new JSONArray();
+        for(int i=0;refs!=null && i<refs.length();i++) {
+            String name=refs.optString(i);
+            if(!Studio.safe(name)) {
+                keys.put("ref:"+name);
+                continue;
+            }
+            String cached=referenceKeys.get(name);
+            if(cached==null) {
+                cached="ref:"+name;
+                try(InputStream in=new FileInputStream(new File(app.refs,name))) {
+                    MessageDigest digest=MessageDigest.getInstance("SHA-256");
+                    byte[] bytes=new byte[32768];
+                    for(int read;(read=in.read(bytes))!=-1;)digest.update(bytes,0,read);
+                    cached="sha256:"+android.util.Base64.encodeToString(digest.digest(),android.util.Base64.NO_WRAP);
+                } catch(IOException | java.security.NoSuchAlgorithmException ignored) {}
+                referenceKeys.put(name,cached);
+            }
+            keys.put(cached);
+        }
+        return keys;
+    }
+    private void openReferencePicker(int limit) {
+        Intent intent=new Intent(MediaStore.ACTION_PICK_IMAGES).setType("image/*");
+        if(limit>1)intent.putExtra(MediaStore.EXTRA_PICK_IMAGES_MAX,limit);
+        if(Build.VERSION.SDK_INT>=35)
+            intent.putExtra(MediaStore.EXTRA_PICK_IMAGES_LAUNCH_TAB,MediaStore.PICK_IMAGES_TAB_ALBUMS);
+        try {
+            startActivityForResult(intent,41);
+        } catch(ActivityNotFoundException | SecurityException unavailable) {
+            startActivityForResult(new Intent(this,AlbumActivity.class).putExtra(AlbumActivity.LIMIT,limit),41);
+        }
     }
     private void openPicker(int request,String context,boolean multiple) {
         picker=context;

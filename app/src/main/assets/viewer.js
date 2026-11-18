@@ -5,11 +5,11 @@ function imageViewer(src,description) {
   '<img src="'+e(src)+'" alt="'+e(description)+'" draggable="false"></div>';
 }
 
-function setupViewer(viewport) {
+function setupViewer(viewport,onSwipe) {
  if(!viewport)return;
  const image=viewport.querySelector('img');
  const points=new Map();
- let scale=1,x=0,y=0;
+ let scale=1,x=0,y=0,swipe=null;
  function render() {
   const width=viewport.clientWidth,height=viewport.clientHeight;
   const fit=Math.min(width/(image.naturalWidth||width||1),height/(image.naturalHeight||height||1));
@@ -29,6 +29,11 @@ function setupViewer(viewport) {
   return [px-r.left-r.width/2,py-r.top-r.height/2];
  }
  viewport.addEventListener('keydown',event=>{
+  if(onSwipe&&scale===1&&['ArrowLeft','ArrowRight'].includes(event.key)){
+   event.preventDefault();
+   onSwipe(event.key==='ArrowLeft'?-1:1);
+   return;
+  }
   if(!['+','=','-','0'].includes(event.key))return;
   event.preventDefault();
   zoom(event.key==='0'?1:scale*(event.key==='-'?1/1.5:1.5));
@@ -36,6 +41,8 @@ function setupViewer(viewport) {
  viewport.addEventListener('dblclick',event=>zoom(scale>1?1:2,...offset(event.clientX,event.clientY)));
  viewport.addEventListener('pointerdown',event=>{
   if(points.size>=2)return;
+  if(onSwipe&&scale===1&&!points.size)swipe={id:event.pointerId,x:event.clientX,y:event.clientY};
+  else swipe=null;
   viewport.setPointerCapture(event.pointerId);
   points.set(event.pointerId,{x:event.clientX,y:event.clientY});
  });
@@ -54,7 +61,17 @@ function setupViewer(viewport) {
    x+=next.x-old.x;y+=next.y-old.y;render();
   }
  });
- for(const event of ['pointerup','pointercancel','lostpointercapture'])
-  viewport.addEventListener(event,e=>points.delete(e.pointerId));
+ viewport.addEventListener('pointerup',event=>{
+  points.delete(event.pointerId);
+  if(!swipe||swipe.id!==event.pointerId)return;
+  const dx=event.clientX-swipe.x,dy=event.clientY-swipe.y;
+  swipe=null;
+  if(scale===1&&Math.abs(dx)>=48&&Math.abs(dx)>Math.abs(dy)*1.5)onSwipe(dx<0?1:-1);
+ });
+ for(const type of ['pointercancel','lostpointercapture'])
+  viewport.addEventListener(type,event=>{
+   points.delete(event.pointerId);
+   if(swipe&&swipe.id===event.pointerId)swipe=null;
+  });
  image.addEventListener('load',render);
 }
