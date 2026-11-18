@@ -264,13 +264,29 @@ public class MainActivity extends Activity {
             }
             case "pendingRefs": {
                 String pending=app.prefs.getString("pendingRefs","[]");
-                app.prefs.edit().remove("pendingRefs").apply();
-                return new JSONArray(pending);
+                String removed=app.prefs.getString("pendingRemoved","[]");
+                String order=app.prefs.getString("pendingRefOrder","[]");
+                app.prefs.edit().remove("pendingRefs").remove("pendingRemoved").remove("pendingRefOrder").apply();
+                return new JSONObject().put("added",new JSONArray(pending)).put("removed",new JSONArray(removed)).put("order",new JSONArray(order));
             }
             case "pick": {
-                int limit=Math.max(1,Math.min(14,d.optInt("limit",1)));
-                runOnUiThread(()->startActivityForResult(new Intent(this,AlbumActivity.class)
-                    .putExtra(AlbumActivity.LIMIT,limit),41));
+                int limit=Math.max(0,Math.min(14,d.optInt("limit",1)));
+                JSONArray draftRefs=Studio.json(app.prefs.getString("draft","{}")).optJSONArray("refs");
+                if(draftRefs==null)draftRefs=new JSONArray();
+                ArrayList<String> sources=new ArrayList<>(),files=new ArrayList<>();
+                for(int i=0;i<draftRefs.length();i++){
+                    String file=draftRefs.optString(i);
+                    String uri=app.prefs.getString("source."+file,null);
+                    if(!Studio.safe(file))continue;
+                    if(uri==null || sources.contains(uri))uri="content://studio.yingxu.frame.pictures/reference/"+file;
+                    sources.add(uri);files.add(file);
+                }
+                Intent pick=new Intent(this,AlbumActivity.class)
+                    .putExtra(AlbumActivity.LIMIT,Math.min(14,limit+sources.size()))
+                    .putExtra(AlbumActivity.DRAFT,draftRefs.toString())
+                    .putStringArrayListExtra(AlbumActivity.EXISTING,sources)
+                    .putStringArrayListExtra(AlbumActivity.FILES,files);
+                runOnUiThread(()->startActivityForResult(pick,41));
                 return true;
             }
             case "save": return export(fileFrom(d));
@@ -410,8 +426,14 @@ public class MainActivity extends Activity {
         else if(data.getData()!=null)uris.add(data.getData());
         io.execute(()->{
             JSONArray names=new JSONArray(); int failed=0;
+            Map<String,String> imported=new HashMap<>();
             for(Uri uri:uris) {
-                try{names.put(importRef(ImageDecoder.createSource(getContentResolver(),uri)));}
+                try{
+                    String name=importRef(ImageDecoder.createSource(getContentResolver(),uri));
+                    names.put(name);
+                    imported.put(uri.toString(),name);
+                    app.prefs.edit().putString("source."+name,uri.toString()).apply();
+                }
                 catch(Exception e){failed++;}
                 finally{
                     if(PictureProvider.isCapture(uri))PictureProvider.captureFile(this,uri).delete();
@@ -420,7 +442,17 @@ public class MainActivity extends Activity {
             try {
                 JSONArray pending=new JSONArray(app.prefs.getString("pendingRefs","[]"));
                 for(int k=0;k<names.length();k++)pending.put(names.get(k));
-                app.prefs.edit().putString("pendingRefs",pending.toString()).commit();
+                JSONArray removed=new JSONArray(app.prefs.getString("pendingRemoved","[]"));
+                ArrayList<String> changes=data.getStringArrayListExtra(AlbumActivity.REMOVED);
+                if(changes!=null)for(String name:changes)removed.put(name);
+                JSONArray order=new JSONArray();
+                ArrayList<String> selected=data.getStringArrayListExtra(AlbumActivity.ORDER);
+                if(selected!=null)for(String item:selected){
+                    String name=Studio.safe(item)?item:imported.get(item);
+                    if(name!=null)order.put(name);
+                }
+                app.prefs.edit().putString("pendingRefs",pending.toString()).putString("pendingRemoved",removed.toString())
+                    .putString("pendingRefOrder",order.toString()).commit();
             } catch(JSONException ignored) {}
             final int failures=failed;
             js("window.receiveReferences && window.receiveReferences("+failures+")");

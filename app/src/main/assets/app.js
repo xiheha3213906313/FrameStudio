@@ -141,7 +141,7 @@ function hero(){
  return '<div class="hero"><img src="art/'+s.img+'.jpg" alt="'+e(s.title)+'"><div class="hero-top"><span class="feature-label">'+icon('book')+'提示词灵感</span><div class="dots">'+samples.map((x,i)=>button('slide','',i===sampleIndex?'sel':'',i,'aria-label="查看'+e(x.title)+'"')).join('')+'</div></div><div class="hero-bottom"><div><h2>'+e(s.title)+'</h2><p>'+e(s.style)+'</p></div>'+button('sample',icon('upRight'),'circle',sampleIndex,'aria-label="查看并使用提示词"')+'</div></div>';
 }
 function refstrip(){
- return '<div class="refstrip">'+draft.refs.map((r,i)=>'<div class="refitem">'+button('refPhoto','<img src="refs/'+e(r)+'.thumb" alt="参考图 '+(i+1)+'">','ref-preview',r)+button('unref','×','ref-remove',i,'aria-label="移除参考图"')+'</div>').join('')+(draft.refs.length<allowedRefs()?button('pick',icon('plus')+'<span class="ref-label">参考图</span>','refslot'):'')+'</div>';
+ return '<div class="refstrip">'+draft.refs.map((r,i)=>'<div class="refitem">'+button('refPhoto','<img src="refs/'+e(r)+'.thumb" alt="参考图 '+(i+1)+'">','ref-preview',r)+button('unref','×','ref-remove',i,'aria-label="移除参考图"')+'</div>').join('')+(allowedRefs()>0?button('pick',icon('plus')+'<span class="ref-label">'+(draft.refs.length>=allowedRefs()?'选图':'参考图')+'</span>','refslot'):'')+'</div>';
 }
 function createPage(){
  normalize();const b=body(),total=cost(b,null);
@@ -243,7 +243,7 @@ function settingsPage(){return title('设置')+'<div class="section-title"><h2>�
  row('custom','自定义推理接入点','添加 Endpoint ID 或新的 Model ID')+'<div class="section-title"><h2>使用与计费</h2></div>'+
  row('ledger','本机费用统计','按任务提交时的单价快照汇总')+row('doc','官方模型价格','查看火山方舟最新公布的计费规则','docs/model-pricing')+
  row('doc','错误码手册','按错误码排查权限、配额、请求参数等问题','docs/error-codes')+row('doc','图片生成指南','查看模型能力、参考图限制和调用示例','docs/image-generation-tutorial')+
- '<div class="panel"><h3>映序 · Frame Studio</h3><p class="sub">版本 1.5 · 火山方舟北京地域，标准按量 API。图片和任务记录保存在此设备。</p></div>';}
+ '<div class="panel"><h3>映序 · Frame Studio</h3><p class="sub">版本 1.7 · 火山方舟北京地域，标准按量 API。图片和任务记录保存在此设备。</p></div>';}
 function animateIn(element) {
  if(!element.animate || matchMedia('(prefers-reduced-motion: reduce)').matches)return;
  const animation=element.animate([{opacity:0,transform:'translateY(9px)'},{opacity:1,transform:'translateY(0)'}],
@@ -588,7 +588,21 @@ window.addReferences=function(names,failed){
  const n=Math.max(0,allowedRefs()-draft.refs.length);draft.refs=draft.refs.concat(names.slice(0,n));normalize();redraw();
  if(failed||names.length>n)toast(failed?'部分图片格式或宽高比不支持':'已达到当前模型参考图上限');
 };
-window.receiveReferences=async function(failed){try{const refs=await api('pendingRefs');if(refs.length||failed)window.addReferences(refs,failed);}catch(err){toast(err.message);}};
+window.receiveReferences=async function(failed){
+ try{
+  const changes=await api('pendingRefs'),removed=new Set(changes.removed||[]);
+  const added=Array.isArray(changes)?changes:changes.added||[];
+  if(removed.size)draft.refs=draft.refs.filter(file=>!removed.has(file));
+  if(added.length||removed.size||failed||changes.order?.length){
+   window.addReferences(added,failed);
+   if(changes.order?.length){
+    const ordered=changes.order.filter(file=>draft.refs.includes(file));
+    draft.refs=ordered.concat(draft.refs.filter(file=>!ordered.includes(file)));
+    redraw();
+   }
+  }
+ }catch(err){toast(err.message);}
+};
 function idForRequest(){const bytes=new Uint8Array(16);crypto.getRandomValues(bytes);return Array.from(bytes,n=>n.toString(16).padStart(2,'0')).join('');}
 async function generate(){
  if(submitting)return;

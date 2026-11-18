@@ -11,6 +11,9 @@ import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.database.Cursor;
 import android.graphics.Bitmap;
+import android.content.SharedPreferences;
+import org.json.JSONArray;
+import org.json.JSONException;
 import android.graphics.BitmapFactory;
 import android.graphics.Color;
 import android.graphics.ImageDecoder;
@@ -46,7 +49,6 @@ import android.widget.Toast;
 
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -58,7 +60,11 @@ import java.util.concurrent.Future;
 import java.util.function.IntConsumer;
 
 public class AlbumActivity extends Activity {
-    static final String LIMIT="referenceLimit";
+    static final String LIMIT="referenceLimit", EXISTING="existingSources", FILES="existingRefs",
+        DRAFT="draftRefs", REMOVED="removedRefs", ORDER="orderedRefs";
+    private final Map<Uri,String> existing=new LinkedHashMap<>();
+    private String draftKey;
+    private SharedPreferences basket;
     private static final int PERMISSION=201, CAMERA=202;
     private static final int PAPER=0xfff8f7f3, INK=0xff242821, MUTED=0xff66685e;
     private static final int CLAY=0xffa7442b, PALE=0xfff2e4db, NEUTRAL=0xffeae8e0;
@@ -68,6 +74,7 @@ public class AlbumActivity extends Activity {
     private final LruCache<Uri,Bitmap> cache=new LruCache<Uri,Bitmap>(10*1024*1024){
         @Override protected int sizeOf(Uri key,Bitmap image){return image.getAllocationByteCount();}
     };
+    private final LruCache<Uri,Bitmap> nearbyPreviews=new LruCache<>(3);
     private final Set<Uri> selected=new LinkedHashSet<>();
     private final Map<String,Album> albums=new LinkedHashMap<>();
     private final List<Photo> allPhotos=new ArrayList<>();
@@ -76,7 +83,10 @@ public class AlbumActivity extends Activity {
     private View backdrop;
     private LinearLayout root,tabs,footer;
     private LinearLayout browser;
-    private GridView grid;
+    private PinchGrid grid;
+    private int photoColumns=4, statusInset;
+    private float sheetLevel;
+    private ValueAnimator levelAnimation;
     private TextView heading,message;
     private Button back,access,photoTab,albumTab,preview,done;
     private PhotoAdapter adapter;
@@ -105,7 +115,32 @@ public class AlbumActivity extends Activity {
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
         limit=Math.max(1,Math.min(14,getIntent().getIntExtra(LIMIT,1)));
-        if(state!=null){
+        basket=getSharedPreferences("albumBasket",MODE_PRIVATE);
+        draftKey=getIntent().getStringExtra(DRAFT);
+        if(draftKey==null)draftKey="";
+        ArrayList<String> sources=getIntent().getStringArrayListExtra(EXISTING);
+        ArrayList<String> files=getIntent().getStringArrayListExtra(FILES);
+        if(sources!=null&&files!=null){
+            for(int i=0;i<Math.min(sources.size(),files.size());i++){
+                if(Studio.safe(files.get(i)))existing.put(Uri.parse(sources.get(i)),files.get(i));
+            }
+        }
+        if(state==null){
+            selected.addAll(existing.keySet());
+            try{
+                JSONArray saved=new JSONArray(basket.getString("selection","[]"));
+                boolean restore=draftKey.equals(basket.getString("draftKey",null));
+                if(restore)selected.clear();
+                for(int i=0;i<saved.length();i++){
+                    Uri uri=Uri.parse(saved.getString(i));
+                    boolean capture=PictureProvider.isCapture(uri);
+                    if(restore && selected.size()<limit && (!capture || existing.containsKey(uri)||PictureProvider.captureFile(this,uri).isFile()))selected.add(uri);
+                    else if(capture&&!existing.containsKey(uri))PictureProvider.captureFile(this,uri).delete();
+                }
+            }catch(JSONException ignored){}
+            for(Uri uri:selected)if(PictureProvider.isCapture(uri))captures.add(new Photo(uri,"拍摄的照片"));
+            for(Uri uri:existing.keySet())if(PictureProvider.isCapture(uri)&&!selected.contains(uri))captures.add(new Photo(uri,"拍摄的照片"));
+        }else{
             albumsTab=state.getBoolean("albumsTab");
             albumKey=state.getString("albumKey","");
             cameraUri=state.getParcelable("cameraUri");
@@ -133,6 +168,7 @@ public class AlbumActivity extends Activity {
         super.onSaveInstanceState(state);
     }
     @Override protected void onDestroy(){
+        if(levelAnimation!=null)levelAnimation.cancel();
         if(sheetAnimation!=null){
             sheetAnimation.removeAllListeners();
             sheetAnimation.cancel();
@@ -140,7 +176,7 @@ public class AlbumActivity extends Activity {
         if(isFinishing()){
             discardCamera();
             for(Photo photo:captures)
-                if(!finishedSelection||!selected.contains(photo.uri))PictureProvider.captureFile(this,photo.uri).delete();
+                if(!selected.contains(photo.uri))PictureProvider.captureFile(this,photo.uri).delete();
         }
         catalog.shutdownNow();
         thumbnails.shutdownNow();
@@ -205,11 +241,12 @@ public class AlbumActivity extends Activity {
         message.setGravity(Gravity.CENTER);
         message.setPadding(dp(20),dp(14),dp(20),dp(14));
         browser.addView(message,new LinearLayout.LayoutParams(-1,-2));
-        grid=new GridView(this);
+        grid=new PinchGrid(this);
         grid.setStretchMode(GridView.STRETCH_COLUMN_WIDTH);
         grid.setClipToPadding(false);
         adapter=new PhotoAdapter();
         grid.setAdapter(adapter);
+        grid.onColumnsChanged=count->photoColumns=count;
         browser.addView(grid,new LinearLayout.LayoutParams(-1,0,1));
 
         View divider=new View(this);
@@ -218,7 +255,7 @@ public class AlbumActivity extends Activity {
         footer=rowBar();
         footer.setPadding(dp(14),dp(10),dp(14),dp(10));
         preview=control("预览",v->{
-            if(previewPanel==null)showPreview(new ArrayList<>(selected),0);
+            if(previewPanel==null)showPreview(new ArrayList<>(selected),0,true);
             else closePreview();
         });
         done=control("添加",v->returnSelection());
@@ -231,8 +268,9 @@ public class AlbumActivity extends Activity {
             int left,right,bottom;
             if(Build.VERSION.SDK_INT>=30){
                 android.graphics.Insets safe=insets.getInsets(WindowInsets.Type.systemBars()|WindowInsets.Type.displayCutout());
-                left=safe.left;right=safe.right;bottom=safe.bottom;
+                left=safe.left;right=safe.right;bottom=safe.bottom;statusInset=safe.top;
             }else{
+                statusInset=insets.getStableInsetTop();
                 left=insets.getStableInsetLeft();
                 right=insets.getStableInsetRight();
                 bottom=insets.getStableInsetBottom();
@@ -257,10 +295,56 @@ public class AlbumActivity extends Activity {
     }
 
     private class PickerOverlay extends FrameLayout {
+        private float downX,downY,startTop;
+        private boolean headerTouch,canDrag,dragging;
+        private int collapsedHeight(int height){return Math.round(height*.75f);}
+        private int travel(int height){return Math.max(1,height-statusInset-collapsedHeight(height));}
+
         PickerOverlay(){super(AlbumActivity.this);}
+        @Override public boolean dispatchTouchEvent(MotionEvent event){
+            if(closing)return true;
+            int action=event.getActionMasked(),height=getHeight();
+            float dy=event.getY()-downY;
+            if(action==MotionEvent.ACTION_DOWN){
+                downX=event.getX();downY=event.getY();
+                startTop=root.getY();
+                headerTouch=downY>=startTop && downY<startTop+heading.getBottom()+dp(30);
+                canDrag=downY>=startTop && downY<footer.getTop()+startTop && (headerTouch||previewPanel==null);
+                dragging=false;
+            }else if(event.getPointerCount()>1 && !dragging)canDrag=false;
+            if(action==MotionEvent.ACTION_MOVE && canDrag && !dragging){
+                if((dy<0 && sheetLevel<.999f || headerTouch && dy>0)
+                    && Math.abs(dy)>ViewConfiguration.get(getContext()).getScaledTouchSlop()
+                    && Math.abs(dy)>Math.abs(event.getX()-downX)*1.3f){
+                    MotionEvent cancel=MotionEvent.obtain(event);
+                    cancel.setAction(MotionEvent.ACTION_CANCEL);
+                    super.dispatchTouchEvent(cancel);
+                    cancel.recycle();
+                    if(levelAnimation!=null)levelAnimation.cancel();
+                    if(sheetAnimation!=null)sheetAnimation.cancel();
+                    sheetProgress=1;
+                    dragging=true;
+                }
+            }
+            if(!dragging)return super.dispatchTouchEvent(event);
+            if(action==MotionEvent.ACTION_MOVE){
+                float delta=height-collapsedHeight(height)-startTop-dy;
+                setLevel(Math.max(-1f,Math.min(1f,delta/(delta>=0?travel(height):collapsedHeight(height)))));
+            }else if(action==MotionEvent.ACTION_UP||action==MotionEvent.ACTION_CANCEL){
+                dragging=false;
+                if(action==MotionEvent.ACTION_UP&&sheetLevel<-.16f)dismissPicker();
+                else {
+                    float target=sheetLevel>.5f?1:0;
+                    if(action==MotionEvent.ACTION_UP&&Math.abs(dy)>dp(34))target=dy<0?1:0;
+                    settleLevel(target);
+                }
+            }
+            return true;
+        }
         @Override protected void onMeasure(int width,int height){
             ViewGroup.LayoutParams layout=root.getLayoutParams();
-            layout.height=Math.round(MeasureSpec.getSize(height)*.75f);
+            int screen=MeasureSpec.getSize(height);
+            layout.height=collapsedHeight(screen)+Math.round(Math.max(0f,sheetLevel)*travel(screen));
             super.onMeasure(width,height);
         }
         @Override protected void onLayout(boolean changed,int left,int top,int right,int bottom){
@@ -268,9 +352,22 @@ public class AlbumActivity extends Activity {
             applySheetProgress();
         }
     }
+    private void setLevel(float value){
+        sheetLevel=value;
+        overlay.requestLayout();
+        applySheetProgress();
+    }
+    private void settleLevel(float target){
+        if(levelAnimation!=null)levelAnimation.cancel();
+        levelAnimation=ValueAnimator.ofFloat(sheetLevel,target);
+        levelAnimation.setDuration(180);
+        levelAnimation.addUpdateListener(a->setLevel((float)a.getAnimatedValue()));
+        levelAnimation.start();
+    }
     private void applySheetProgress(){
-        backdrop.setAlpha(sheetProgress);
-        root.setTranslationY(root.getHeight()*(1f-sheetProgress));
+        float visible=sheetProgress*(1f+Math.min(0f,sheetLevel));
+        backdrop.setAlpha(visible);
+        root.setTranslationY(root.getHeight()*(1f-visible));
     }
     private void animateSheet(float target){
         if(sheetAnimation!=null)sheetAnimation.cancel();
@@ -292,6 +389,12 @@ public class AlbumActivity extends Activity {
     private void dismissPicker(){
         if(closing)return;
         closing=true;
+        if(finishedSelection)basket.edit().clear().apply();
+        else {
+            JSONArray saved=new JSONArray();
+            for(Uri uri:selected)saved.put(uri.toString());
+            basket.edit().putString("draftKey",draftKey).putString("selection",saved.toString()).apply();
+        }
         animateSheet(0f);
     }
 
@@ -355,6 +458,9 @@ public class AlbumActivity extends Activity {
                     downX=event.getX();downY=event.getY();
                     horizontal=false;vertical=false;
                     break;
+                case MotionEvent.ACTION_POINTER_DOWN:
+                    vertical=true;horizontal=false;
+                    break;
                 case MotionEvent.ACTION_MOVE:
                     if(event.getPointerCount()==1&&!vertical){
                         float dx=Math.abs(event.getX()-downX),dy=Math.abs(event.getY()-downY);
@@ -393,7 +499,8 @@ public class AlbumActivity extends Activity {
         skin(albumTab,albumsTab?PALE:NEUTRAL,albumsTab?CLAY:INK,10);
 
         boolean covers=inAlbumList();
-        grid.setNumColumns(covers?3:4);
+        grid.setZoomEnabled(!covers);
+        grid.setNumColumns(covers?3:photoColumns);
         grid.setPadding(dp(covers?14:0),0,dp(covers?14:0),0);
         grid.setHorizontalSpacing(dp(covers?9:3));
         grid.setVerticalSpacing(dp(covers?10:3));
@@ -417,9 +524,10 @@ public class AlbumActivity extends Activity {
             access.setContentDescription(chosen?"取消选中这张照片":"选中这张照片");
             skin(access,chosen?PALE:NEUTRAL,chosen?CLAY:INK,12);
         }else access.setContentDescription(null);
-        done.setText(count==0?"添加":"添加 "+count+" 张");
-        done.setEnabled(count>0);
-        skin(done,count>0?CLAY:NEUTRAL,count>0?Color.WHITE:MUTED,12);
+        boolean confirm=count>0||!existing.isEmpty();
+        done.setText(existing.isEmpty()?(count==0?"添加":"添加 "+count+" 张"):"完成 ("+count+")");
+        done.setEnabled(confirm);
+        skin(done,confirm?CLAY:NEUTRAL,confirm?Color.WHITE:MUTED,12);
         adapter.notifyDataSetChanged();
     }
     private void openCell(Object item){
@@ -428,7 +536,12 @@ public class AlbumActivity extends Activity {
             albumKey=album.key;
             updateView();
             grid.setSelection(0);
-        }else if(item instanceof Photo)showPreview(Collections.singletonList(((Photo)item).uri),0);
+        }else if(item instanceof Photo){
+            List<Uri> sequence=new ArrayList<>(visiblePhotos().size());
+            for(Photo photo:visiblePhotos())sequence.add(photo.uri);
+            int index=sequence.indexOf(((Photo)item).uri);
+            if(index>=0)showPreview(sequence,index,false);
+        }
         else takePhoto();
     }
     private void toggleSelection(Uri uri){
@@ -440,7 +553,7 @@ public class AlbumActivity extends Activity {
     }
     private void notice(String text){Toast.makeText(this,text,Toast.LENGTH_SHORT).show();}
 
-    private void showPreview(List<Uri> uris,int index){
+    private void showPreview(List<Uri> uris,int index,boolean selectedOnly){
         if(uris.isEmpty())return;
         previewUri=uris.get(index);
         if(previewPanel!=null)root.removeView(previewPanel);
@@ -449,13 +562,15 @@ public class AlbumActivity extends Activity {
         back.setText("返回");
         LinearLayout panel=new LinearLayout(this);
         panel.setOrientation(LinearLayout.VERTICAL);
-        ZoomPreview image=new ZoomPreview(direction->{
+        Uri previous=index>0?uris.get(index-1):null;
+        Uri following=index+1<uris.size()?uris.get(index+1):null;
+        ZoomPreview image=new ZoomPreview(previous,following,direction->{
             int next=index+direction;
-            if(next>=0&&next<uris.size())showPreview(uris,next);
+            if(next>=0&&next<uris.size())showPreview(uris,next,selectedOnly);
         });
         image.setContentDescription("照片预览，支持双击或双指缩放");
         panel.addView(image,new LinearLayout.LayoutParams(-1,0,1));
-        if(uris.size()>1){
+        if(selectedOnly && uris.size()>1){
             HorizontalScrollView strip=new HorizontalScrollView(this);
             LinearLayout stripRow=rowBar();
             stripRow.setPadding(dp(8),dp(8),dp(8),dp(8));
@@ -466,7 +581,7 @@ public class AlbumActivity extends Activity {
                 LinearLayout.LayoutParams params=new LinearLayout.LayoutParams(dp(56),dp(56));
                 params.rightMargin=dp(5);
                 stripRow.addView(thumb,params);
-                thumb.setOnClickListener(v->showPreview(uris,target));
+                thumb.setOnClickListener(v->showPreview(uris,target,selectedOnly));
             }
             strip.addView(stripRow);
             panel.addView(strip);
@@ -477,7 +592,8 @@ public class AlbumActivity extends Activity {
         updateCount();
         if(previewLoad!=null)previewLoad.cancel(false);
         Uri uri=previewUri;
-        image.setBitmap(cache.get(uri));
+        Bitmap placeholder=nearbyPreviews.get(uri);
+        image.setBitmap(placeholder==null?cache.get(uri):placeholder);
         previewLoad=thumbnails.submit(()->{
             try {
                 Bitmap bitmap=decodePreview(uri,Math.min(dp(800),1600));
@@ -511,11 +627,13 @@ public class AlbumActivity extends Activity {
             &&checkSelfPermission(Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED)==PackageManager.PERMISSION_GRANTED;
     }
     private Bitmap loadThumbnail(Uri uri,int size) throws IOException {
-        if(!PictureProvider.isCapture(uri))return getContentResolver().loadThumbnail(uri,new Size(size,size),null);
+        if(!existing.containsKey(uri)&&!PictureProvider.isCapture(uri))return getContentResolver().loadThumbnail(uri,new Size(size,size),null);
         return decodePreview(uri,size);
     }
     private Bitmap decodePreview(Uri uri,int size) throws IOException {
-        ImageDecoder.Source source=PictureProvider.isCapture(uri)
+        String ref=existing.get(uri);
+        java.io.File local=ref==null?null:new java.io.File(new java.io.File(getFilesDir(),"references"),ref);
+        ImageDecoder.Source source=local!=null&&local.isFile()?ImageDecoder.createSource(local):PictureProvider.isCapture(uri)
             ?ImageDecoder.createSource(PictureProvider.captureFile(this,uri))
             :ImageDecoder.createSource(getContentResolver(),uri);
         return ImageDecoder.decodeBitmap(source,
@@ -579,11 +697,21 @@ public class AlbumActivity extends Activity {
         load();
     }
     private void returnSelection(){
-        if(selected.isEmpty()||closing)return;
-        ArrayList<Uri> uris=new ArrayList<>(selected);
-        ClipData clip=ClipData.newUri(getContentResolver(),"参考图",uris.get(0));
-        for(int i=1;i<uris.size();i++)clip.addItem(new ClipData.Item(uris.get(i)));
+        if((selected.isEmpty()&&existing.isEmpty())||closing)return;
         Intent result=new Intent().addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        ArrayList<String> removed=new ArrayList<>();
+        for(Map.Entry<Uri,String> entry:existing.entrySet())
+            if(!selected.contains(entry.getKey()))removed.add(entry.getValue());
+        result.putStringArrayListExtra(REMOVED,removed);
+        ClipData clip=null;
+        ArrayList<String> order=new ArrayList<>();
+        for(Uri uri:selected){
+            order.add(existing.containsKey(uri)?existing.get(uri):uri.toString());
+            if(existing.containsKey(uri))continue;
+            if(clip==null)clip=ClipData.newRawUri("参考图",uri);
+            else clip.addItem(new ClipData.Item(uri));
+        }
+        result.putStringArrayListExtra(ORDER,order);
         result.setClipData(clip);
         finishedSelection=true;
         setResult(RESULT_OK,result);
@@ -621,10 +749,14 @@ public class AlbumActivity extends Activity {
                 allPhotos.clear();allPhotos.addAll(captures);allPhotos.addAll(images);
                 albums.clear();albums.putAll(result);
                 if(!albumKey.isEmpty()&&!albums.containsKey(albumKey))albumKey="";
-                if(!error){
+                {
                     Set<Uri> available=new LinkedHashSet<>();
                     for(Photo photo:allPhotos)available.add(photo.uri);
-                    selected.retainAll(available);
+                    for(Uri uri:existing.keySet()){
+                        if(!available.contains(uri))allPhotos.add(0,new Photo(uri,"创作台参考图"));
+                    }
+                    available.addAll(existing.keySet());
+                    if(!error&&hasAccess())selected.retainAll(available);
                 }
                 if(previewPanel==null)updateView();else updateCount();
             });
@@ -634,17 +766,24 @@ public class AlbumActivity extends Activity {
     private int dp(float size){return Math.round(size*getResources().getDisplayMetrics().density);}
     private class ZoomPreview extends FrameLayout {
         private final ImageView image;
+        private final ImageView left,right;
+        private final List<Future<?>> neighbors=new ArrayList<>();
+        private ValueAnimator slideAnimation;
+        private float travel;
+        private boolean sliding;
         private final GestureDetector drag;
         private final ScaleGestureDetector pinch;
         private final IntConsumer onSwipe;
         private float zoom=1f, x,y,downX,downY;
         private boolean canSwipe;
 
-        ZoomPreview(IntConsumer onSwipe){
+        ZoomPreview(Uri before,Uri after,IntConsumer onSwipe){
             super(AlbumActivity.this);
             this.onSwipe=onSwipe;
             setBackgroundColor(NEUTRAL);
             setClipChildren(true);
+            left=neighbor(before);
+            right=neighbor(after);
             image=new ImageView(AlbumActivity.this);
             image.setScaleType(ImageView.ScaleType.FIT_CENTER);
             addView(image,new LayoutParams(-1,-1));
@@ -670,6 +809,42 @@ public class AlbumActivity extends Activity {
                 }
             });
             pinch.setQuickScaleEnabled(false);
+        }
+        private ImageView neighbor(Uri uri){
+            if(uri==null)return null;
+            ImageView neighbor=new ImageView(AlbumActivity.this);
+            neighbor.setScaleType(ImageView.ScaleType.FIT_CENTER);
+            Bitmap ready=nearbyPreviews.get(uri);
+            neighbor.setImageBitmap(ready==null?cache.get(uri):ready);
+            addView(neighbor,new LayoutParams(-1,-1));
+            if(ready!=null)return neighbor;
+            neighbors.add(thumbnails.submit(()->{
+                try{
+                    Bitmap bitmap=decodePreview(uri,768);
+                    nearbyPreviews.put(uri,bitmap);
+                    runOnUiThread(()->{
+                        if(!isDestroyed()&&isAttachedToWindow())neighbor.setImageBitmap(bitmap);
+                    });
+                }catch(IOException|RuntimeException ignored){}
+            }));
+            return neighbor;
+        }
+        @Override protected void onDetachedFromWindow(){
+            if(slideAnimation!=null){slideAnimation.removeAllListeners();slideAnimation.cancel();}
+            for(Future<?> future:neighbors)future.cancel(false);
+            super.onDetachedFromWindow();
+        }
+        private void settleSlide(int direction){
+            slideAnimation=ValueAnimator.ofFloat(travel,-direction*getWidth());
+            slideAnimation.setDuration(165);
+            slideAnimation.addUpdateListener(a->{travel=(float)a.getAnimatedValue();applyZoom();});
+            slideAnimation.addListener(new AnimatorListenerAdapter(){
+                @Override public void onAnimationEnd(Animator a){
+                    slideAnimation=null;
+                    if(direction!=0 && isAttachedToWindow())onSwipe.accept(direction);
+                }
+            });
+            slideAnimation.start();
         }
         void setBitmap(Bitmap bitmap){
             image.setImageBitmap(bitmap);
@@ -699,19 +874,35 @@ public class AlbumActivity extends Activity {
             x=Math.max(-limitX,Math.min(limitX,x));
             y=Math.max(-limitY,Math.min(limitY,y));
             image.setScaleX(zoom);image.setScaleY(zoom);
-            image.setTranslationX(x);image.setTranslationY(y);
+            image.setTranslationX(x+travel);image.setTranslationY(y);
+            if(left!=null)left.setTranslationX(travel-getWidth());
+            if(right!=null)right.setTranslationX(travel+getWidth());
         }
         @Override public boolean onTouchEvent(MotionEvent event){
             int action=event.getActionMasked();
+            if(slideAnimation!=null)return true;
             if(action==MotionEvent.ACTION_DOWN){
                 downX=event.getX();downY=event.getY();
-                canSwipe=zoom==1f;
-            }else if(action==MotionEvent.ACTION_POINTER_DOWN)canSwipe=false;
+                canSwipe=zoom==1f;sliding=false;
+            }else if(action==MotionEvent.ACTION_POINTER_DOWN){
+                canSwipe=false;sliding=false;travel=0;applyZoom();
+            }
             pinch.onTouchEvent(event);
             drag.onTouchEvent(event);
-            if(action==MotionEvent.ACTION_UP&&canSwipe){
-                float dx=event.getX()-downX,dy=event.getY()-downY;
-                if(Math.abs(dx)>dp(46)&&Math.abs(dx)>Math.abs(dy)*1.3f)onSwipe.accept(dx<0?1:-1);
+            float dx=event.getX()-downX,dy=event.getY()-downY;
+            if(action==MotionEvent.ACTION_MOVE&&canSwipe){
+                if(Math.abs(dx)>dp(5)&&Math.abs(dx)>Math.abs(dy))sliding=true;
+                if(sliding){
+                    boolean available=dx<0?right!=null:left!=null;
+                    travel=available?dx:dx*.18f;
+                    applyZoom();
+                }
+            }
+            if(sliding && (action==MotionEvent.ACTION_UP||action==MotionEvent.ACTION_CANCEL)){
+                boolean commit=action==MotionEvent.ACTION_UP && Math.abs(dx)>Math.min(dp(52),getWidth()*.20f);
+                int direction=dx<0&&right!=null?1:dx>0&&left!=null?-1:0;
+                sliding=false;
+                settleSlide(commit?direction:0);
             }
             return true;
         }
