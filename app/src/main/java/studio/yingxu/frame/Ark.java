@@ -84,7 +84,8 @@ final class Ark {
         JSONArray refs = body.getJSONArray("refs");
         int count = body.getInt("count");
         boolean streamOutput=body.optBoolean("stream");
-        String prompt = body.getString("prompt");
+        String prompt = PromptReferences.serialize(body, refs, false);
+        if (body.optJSONArray("promptRefs") != null && body.optJSONArray("promptRefs").length() > 0) prompt = prompt.trim();
         JSONObject payload = new JSONObject().put("model",body.getString("model"))
             .put("prompt",count>1 ? prompt+"\n请生成一组 "+count+" 张关联图片。" : prompt)
             .put("response_format","url").put("watermark",body.optBoolean("watermark",false));

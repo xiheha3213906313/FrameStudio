@@ -16,12 +16,14 @@ import javax.crypto.spec.GCMParameterSpec;
 public class Studio extends Application {
     Store db;
     SharedPreferences prefs;
+    MacConnection mac;
     File images, refs;
     static final String BASE = "https://ark.cn-beijing.volces.com/api/v3";
     @Override public void onCreate() {
         super.onCreate();
         prefs = getSharedPreferences("studio", MODE_PRIVATE);
         db = new Store(this);
+        mac = new MacConnection(this);
         images = new File(getFilesDir(), "images");
         refs = new File(getFilesDir(), "references");
         images.mkdirs(); refs.mkdirs();
@@ -86,14 +88,20 @@ public class Studio extends Application {
 
 class Store extends SQLiteOpenHelper {
     final java.util.concurrent.atomic.AtomicLong revision=new java.util.concurrent.atomic.AtomicLong();
-    Store(Context c) { super(c, "studio.db", null, 1); }
+    Store(Context c) { super(c, "studio.db", null, 2); }
     @Override public void onCreate(SQLiteDatabase db) {
-        db.execSQL("CREATE TABLE jobs(id TEXT PRIMARY KEY,created INTEGER NOT NULL,state TEXT NOT NULL,body TEXT NOT NULL,result TEXT NOT NULL)");
+        db.execSQL("CREATE TABLE jobs(id TEXT PRIMARY KEY,created INTEGER NOT NULL,state TEXT NOT NULL,body TEXT NOT NULL,result TEXT NOT NULL,runAfter INTEGER NOT NULL DEFAULT 0,cancelRequested INTEGER NOT NULL DEFAULT 0)");
     }
-    @Override public void onUpgrade(SQLiteDatabase db, int a, int b) { }
-    void add(String id, JSONObject body) {
+    @Override public void onUpgrade(SQLiteDatabase db, int a, int b) {
+        if (a < 2) {
+            db.execSQL("ALTER TABLE jobs ADD COLUMN runAfter INTEGER NOT NULL DEFAULT 0");
+            db.execSQL("ALTER TABLE jobs ADD COLUMN cancelRequested INTEGER NOT NULL DEFAULT 0");
+        }
+    }
+    void add(String id, JSONObject body) { add(id, body, "queued"); }
+    void add(String id, JSONObject body, String state) {
         ContentValues row = new ContentValues();
-        row.put("id", id); row.put("created", System.currentTimeMillis()); row.put("state", "queued");
+        row.put("id", id); row.put("created", System.currentTimeMillis()); row.put("state", state);
         row.put("body", body.toString()); row.put("result", "{}");
         getWritableDatabase().insertOrThrow("jobs", null, row);
         revision.incrementAndGet();
@@ -125,6 +133,7 @@ class Store extends SQLiteOpenHelper {
         JSONObject j = new JSONObject();
         Studio.with(j,"id",c.getString(0)); Studio.with(j,"created",c.getLong(1)); Studio.with(j,"state",c.getString(2));
         Studio.with(j,"body",Studio.json(c.getString(3))); Studio.with(j,"result",Studio.json(c.getString(4)));
+        if (c.getInt(6) != 0) Studio.with(j, "cancelRequested", true);
         return j;
     }
     JSONArray all() {
@@ -151,6 +160,87 @@ class Store extends SQLiteOpenHelper {
             return c.moveToFirst() ? read(c) : null;
         }
     }
+    private static final String MAC_ACTIVE = "('mac_queued','mac_remote','mac_waiting','mac_fetching')";
+    static final String ALL_ACTIVE = "('queued','sending','fetching','mac_queued','mac_remote','mac_waiting','mac_fetching')";
+
+    JSONObject nextMac(long now) {
+        try (Cursor c = getReadableDatabase().rawQuery(
+            "SELECT * FROM jobs WHERE state IN " + MAC_ACTIVE + " AND runAfter<=? ORDER BY runAfter,created,rowid LIMIT 1",
+            new String[]{Long.toString(now)})) { return c.moveToFirst() ? read(c) : null; }
+    }
+
+    long nextMacAt() {
+        try (Cursor c = getReadableDatabase().rawQuery("SELECT MIN(runAfter) FROM jobs WHERE state IN " + MAC_ACTIVE, null)) {
+            return c.moveToFirst() && !c.isNull(0) ? c.getLong(0) : Long.MAX_VALUE;
+        }
+    }
+
+    void macUpdate(String id, String state, JSONObject result, long after) {
+        ContentValues row = new ContentValues();
+        row.put("state", state); row.put("result", result.toString()); row.put("runAfter", after);
+        getWritableDatabase().update("jobs", row, "id=?", new String[]{id});
+        revision.incrementAndGet();
+    }
+
+    boolean requestMacCancel(String id) {
+        ContentValues row = new ContentValues();
+        row.put("cancelRequested", 1); row.put("runAfter", 0);
+        boolean changed = getWritableDatabase().update("jobs", row,
+            "id=? AND state IN ('mac_queued','mac_remote','mac_waiting','mac_blocked')", new String[]{id}) == 1;
+        if (changed) {
+            transition(id, MacJobs.BLOCKED, MacJobs.WAITING);
+            revision.incrementAndGet();
+        }
+        return changed;
+    }
+
+    boolean macCancelRequested(String id) {
+        try (Cursor c = getReadableDatabase().rawQuery("SELECT cancelRequested FROM jobs WHERE id=?", new String[]{id})) {
+            return c.moveToFirst() && c.getInt(0) != 0;
+        }
+    }
+
+    void expediteWaitingMac() {
+        ContentValues row = new ContentValues();
+        row.put("runAfter", 0);
+        getWritableDatabase().update("jobs", row, "state='mac_waiting'", null);
+    }
+
+    boolean resumeMac(String serverId, String deviceId, boolean reconnected) {
+        boolean changed = false;
+        try (Cursor c = getReadableDatabase().rawQuery(
+                "SELECT id,body,state,result FROM jobs WHERE state IN ('mac_waiting','mac_blocked','download_error')", null)) {
+            while (c.moveToNext()) {
+                JSONObject body = Studio.json(c.getString(1));
+                if (!serverId.equals(body.optString("serverId")) || !deviceId.equals(body.optString("deviceId"))) continue;
+                String state = c.getString(2);
+                ContentValues row = new ContentValues();
+                if ("download_error".equals(state)) {
+                    JSONObject result = Studio.json(c.getString(3));
+                    JSONObject remote = result.optJSONObject("remote");
+                    // Older records have no failure code. Retry a classified interruption when the Mac comes back.
+                    String reason = result.optString("downloadFailure");
+                    boolean retry = !result.has("downloadFailure") ||
+                        reconnected && ("incomplete_body".equals(reason) || "connection".equals(reason));
+                    if (!retry || remote == null || !"succeeded".equals(remote.optString("state"))) continue;
+                    row.put("state", MacJobs.FETCHING);
+                } else row.put("state", MacJobs.WAITING);
+                row.put("runAfter", 0);
+                changed |= getWritableDatabase().update("jobs", row, "id=? AND state=?", new String[]{c.getString(0), state}) > 0;
+            }
+        }
+        if (changed) revision.incrementAndGet();
+        return changed;
+    }
+
+    boolean recoverMac(String id) {
+        ContentValues row = new ContentValues();
+        row.put("state", MacJobs.FETCHING); row.put("runAfter", 0);
+        boolean changed = getWritableDatabase().update("jobs", row, "id=? AND state='download_error'", new String[]{id}) == 1;
+        if (changed) revision.incrementAndGet();
+        return changed;
+    }
+
     boolean busy() {
         try(Cursor c = getReadableDatabase().rawQuery("SELECT 1 FROM jobs WHERE state IN ('queued','sending','fetching') LIMIT 1",null)) { return c.moveToFirst(); }
     }

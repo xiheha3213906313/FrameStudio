@@ -4,15 +4,23 @@ import android.app.*;
 import android.content.*;
 import android.graphics.*;
 import android.os.IBinder;
+import android.os.Handler;
+import android.os.Looper;
 import org.json.*;
 import java.io.*;
 import java.util.concurrent.*;
 
 public class ImageService extends Service {
     private final ExecutorService runner=Executors.newSingleThreadExecutor();
+    private final ExecutorService macRunner = Executors.newSingleThreadExecutor();
+    private final Handler handler = new Handler(Looper.getMainLooper());
+    private final Runnable pump = this::dispatch;
     private Studio app;
+    private MacJobs macJobs;
+    private int latestStart;
+    private boolean arkRunning, macRunning, destroyed;
     @Override public void onCreate() {
-        super.onCreate(); app=(Studio)getApplication();
+        super.onCreate(); app=(Studio)getApplication(); macJobs = new MacJobs(app);
         NotificationManager manager=getSystemService(NotificationManager.class);
         manager.createNotificationChannel(new NotificationChannel("generation","图片生成任务",NotificationManager.IMPORTANCE_LOW));
     }
@@ -22,12 +30,40 @@ public class ImageService extends Service {
         startForeground(11,new Notification.Builder(this,"generation").setContentTitle("映序 · 正在处理图片")
             .setContentText("点按查看生成任务").setSmallIcon(android.R.drawable.ic_menu_gallery)
             .setContentIntent(open).setOngoing(true).build());
-        runner.execute(()->{
-            JSONObject task;
-            while ((task=app.db.next())!=null) runTask(task);
-            stopSelfResult(startId);
-        });
+        latestStart = startId;
+        dispatch();
         return START_NOT_STICKY;
+    }
+    private void dispatch() {
+        if (destroyed) return;
+        handler.removeCallbacks(pump);
+        if (!arkRunning && app.db.next() != null) {
+            arkRunning = true;
+            runner.execute(() -> {
+                try {
+                    JSONObject task;
+                    while ((task = app.db.next()) != null) runTask(task);
+                } finally { handler.post(() -> { arkRunning = false; dispatch(); }); }
+            });
+        }
+        if (!macRunning) {
+            long now = System.currentTimeMillis();
+            JSONObject task = app.db.nextMac(now);
+            if (task != null) {
+                macRunning = true;
+                macRunner.execute(() -> {
+                    try { macJobs.run(task); }
+                    finally { handler.post(() -> { macRunning = false; dispatch(); }); }
+                });
+            } else {
+                long at = app.db.nextMacAt();
+                if (at != Long.MAX_VALUE) {
+                    handler.postDelayed(pump, Math.max(100, at - now));
+                    return;
+                }
+            }
+        }
+        if (!arkRunning && !macRunning) stopSelfResult(latestStart);
     }
     private void runTask(JSONObject task) {
         String id=task.optString("id"); String state=task.optString("state");
@@ -111,5 +147,11 @@ public class ImageService extends Service {
         }
     }
     @Override public IBinder onBind(Intent i) {return null;}
-    @Override public void onDestroy() {runner.shutdown();super.onDestroy();}
+    @Override public void onDestroy() {
+        destroyed = true;
+        handler.removeCallbacksAndMessages(null);
+        runner.shutdown();
+        macRunner.shutdown();
+        super.onDestroy();
+    }
 }

@@ -61,7 +61,7 @@ import java.util.function.IntConsumer;
 
 public class AlbumActivity extends Activity {
     static final String LIMIT="referenceLimit", EXISTING="existingSources", FILES="existingRefs",
-        DRAFT="draftRefs", REMOVED="removedRefs", ORDER="orderedRefs";
+        DRAFT="draftRefs", REMOVED="removedRefs", ORDER="orderedRefs", UPSCALE="macUpscale", UPSCALE_AVAILABLE="macUpscaleAvailable";
     private final Map<Uri,String> existing=new LinkedHashMap<>();
     private String draftKey;
     private SharedPreferences basket;
@@ -586,6 +586,22 @@ public class AlbumActivity extends Activity {
             strip.addView(stripRow);
             panel.addView(strip);
             strip.post(()->strip.smoothScrollTo(dp(61)*index-strip.getWidth()/2+dp(36),0));
+        }
+        if(getIntent().getBooleanExtra(UPSCALE_AVAILABLE,false)) {
+            Button upscale=control("高清放大",v->{
+                if(previewUri==null||closing)return;
+                closing=true;
+                Intent result=new Intent().setData(previewUri).putExtra(UPSCALE,true)
+                    .putExtra("macRef",existing.get(previewUri))
+                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                setResult(RESULT_OK,result);
+                if(PictureProvider.isCapture(previewUri))selected.add(previewUri);
+                finish();
+            });
+            skin(upscale,NEUTRAL,INK,12);
+            LinearLayout.LayoutParams actionSpace=new LinearLayout.LayoutParams(-1,-2);
+            actionSpace.setMargins(dp(12),dp(5),dp(12),dp(8));
+            panel.addView(upscale,actionSpace);
         }
         root.addView(panel,root.indexOfChild(browser)+1,new LinearLayout.LayoutParams(-1,0,1));
         previewPanel=panel;

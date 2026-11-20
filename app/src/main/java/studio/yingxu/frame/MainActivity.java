@@ -3,9 +3,16 @@ package studio.yingxu.frame;
 import android.app.*;
 import android.content.*;
 import android.graphics.*;
+import android.net.ConnectivityManager;
+import android.net.LinkProperties;
+import android.net.Network;
+import android.net.NetworkCapabilities;
+import android.net.NetworkRequest;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.provider.MediaStore;
 import android.view.*;
 import android.webkit.*;
@@ -20,14 +27,26 @@ public class MainActivity extends Activity {
     private WebView view;
     private Studio app;
     private final ExecutorService io=Executors.newSingleThreadExecutor(), network=Executors.newSingleThreadExecutor();
+    private final ExecutorService macNetwork=Executors.newSingleThreadExecutor();
     private String picker="";
-    private boolean ready, showTasks;
+    private boolean ready, showTasks, watchingMacNetwork;
+    private boolean macReachable;
+    private MacDiscovery macDiscovery;
+    private final Runnable refreshMacNetwork=()->{
+        macDiscovery.restart();
+        if(ready)js("window.macNetworkChanged && window.macNetworkChanged()");
+    };
+    private final ConnectivityManager.NetworkCallback macNetworkChanges=new ConnectivityManager.NetworkCallback(){
+        @Override public void onLinkPropertiesChanged(Network network,LinkProperties link){scheduleMacNetworkRefresh();}
+        @Override public void onLost(Network network){scheduleMacNetworkRefresh();}
+    };
     private boolean keyboardVisible;
     private int statusInset;
     private ViewTreeObserver.OnGlobalLayoutListener keyboardLayout;
     private final Map<String,String> referenceKeys=new HashMap<>();
     @Override public void onCreate(Bundle state) {
         super.onCreate(state); app=(Studio)getApplication();
+        macDiscovery=new MacDiscovery(this,this::sendMacServices);
         Window window=getWindow();
         window.setStatusBarColor(Color.TRANSPARENT);
         window.setStatusBarContrastEnforced(false);
@@ -64,6 +83,8 @@ public class MainActivity extends Activity {
             @Override public void onPageFinished(WebView w,String url){
                 ready=true;
                 sendStatusInset();
+                sendMotionPreference();
+                sendMacServices();
                 if(showTasks){js("window.navigate('tasks')");showTasks=false;}
             }
         });
@@ -71,16 +92,29 @@ public class MainActivity extends Activity {
         observeInsets();
         view.loadUrl(HOME);
         ModelSync.schedule(app);
-        if(app.db.next()!=null) app.wake();
+        app.db.expediteWaitingMac();
+        if(app.db.next()!=null || app.db.nextMacAt()!=Long.MAX_VALUE) app.wake();
         io.execute(()->pruneRefs());
     }
     private void pruneRefs() {
         Set<String> used=new HashSet<>();
         JSONArray tasks=app.db.all();
-        for(int i=0;i<tasks.length();i++) collect(used,tasks.optJSONObject(i).optJSONObject("body").optJSONArray("refs"));
+        for(int i=0;i<tasks.length();i++) {
+            JSONObject body=tasks.optJSONObject(i).optJSONObject("body");
+            collect(used,body.optJSONArray("refs"));
+            collect(used,body.optJSONArray("macInputs"));
+            if(body.has("macRequest"))used.add(body.optString("macRequest"));
+        }
         collect(used,Studio.json(app.prefs.getString("draft","{}")).optJSONArray("refs"));
         File[] files=app.refs.listFiles();
-        if(files!=null) for(File f:files) if(!used.contains(f.getName().replace(".thumb","")) && System.currentTimeMillis()-f.lastModified()>86400000L) f.delete();
+        if(files!=null) for(File f:files) {
+            String name=f.getName().replaceFirst("[.]thumb$", "");
+            String owner=name.replaceFirst("[.]original$", "");
+            if(!used.contains(name) && !used.contains(owner) && System.currentTimeMillis()-f.lastModified()>86400000L) {
+                f.delete();
+                if(name.equals(owner))app.prefs.edit().remove("source."+owner).apply();
+            }
+        }
     }
     private void collect(Set<String>s,JSONArray arr){if(arr!=null)for(int i=0;i<arr.length();i++)s.add(arr.optString(i));}
     @Override protected void onSaveInstanceState(Bundle state){super.onSaveInstanceState(state);state.putString("picker",picker);}
@@ -119,6 +153,9 @@ public class MainActivity extends Activity {
     private void sendStatusInset() {
         js("window.setStatusInset && window.setStatusInset("+statusInset+")");
     }
+    private void sendMotionPreference() {
+        js("window.setReducedMotion && window.setReducedMotion("+!android.animation.ValueAnimator.areAnimatorsEnabled()+")");
+    }
     private void setKeyboardVisible(boolean visible) {
         if(keyboardVisible && !visible) {
             view.postDelayed(()->{
@@ -127,14 +164,47 @@ public class MainActivity extends Activity {
         }
         keyboardVisible=visible;
     }
+    @Override protected void onStart() {
+        super.onStart();
+        macDiscovery.start();
+        ConnectivityManager manager=getSystemService(ConnectivityManager.class);
+        if(manager==null)return;
+        NetworkRequest localNetworks=new NetworkRequest.Builder()
+            .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+            .addTransportType(NetworkCapabilities.TRANSPORT_ETHERNET).build();
+        manager.registerNetworkCallback(localNetworks,macNetworkChanges,new Handler(Looper.getMainLooper()));
+        watchingMacNetwork=true;
+    }
+
+    private void scheduleMacNetworkRefresh(){
+        if(!watchingMacNetwork)return;
+        view.removeCallbacks(refreshMacNetwork);
+        view.postDelayed(refreshMacNetwork,400);
+    }
+
     @Override protected void onResume() {
         super.onResume();
         DisplayPolicy.preferHighRefreshRate(this,view);
+        if(ready){
+            sendMotionPreference();
+            js("window.macNetworkChanged && window.macNetworkChanged()");
+        }
+    }
+
+    @Override protected void onStop(){
+        if(watchingMacNetwork){
+            watchingMacNetwork=false;
+            getSystemService(ConnectivityManager.class).unregisterNetworkCallback(macNetworkChanges);
+        }
+        view.removeCallbacks(refreshMacNetwork);
+        macDiscovery.stop();
+        super.onStop();
     }
     @Override public void onDestroy(){
         ready=false;
         io.shutdown();
         network.shutdown();
+        macNetwork.shutdown();
         if(keyboardLayout!=null)view.getViewTreeObserver().removeOnGlobalLayoutListener(keyboardLayout);
         view.removeJavascriptInterface("StudioNative");
         view.destroy();
@@ -143,6 +213,9 @@ public class MainActivity extends Activity {
     private void js(String script){runOnUiThread(()->{if(!isDestroyed() && !isFinishing()) view.evaluateJavascript(script,null);});}
     private void reply(String id,boolean ok,Object value){
         js("window.nativeReply("+JSONObject.quote(id)+","+ok+","+JSONObject.quote(String.valueOf(value))+")");
+    }
+    private void sendMacServices() {
+        if(ready)js("window.macServicesChanged && window.macServicesChanged("+macDiscovery.json()+")");
     }
     private void notifyUI(String text){js("window.toast("+JSONObject.quote(text)+")");}
     private class Bridge {
@@ -157,10 +230,11 @@ public class MainActivity extends Activity {
                 });
                 return;
             }
-            ExecutorService pool="sync".equals(action)?network:io;
+            boolean macCall=Arrays.asList("macPairInspect","macPairConfirm","macPairCancel","macPair","macRefresh","macAddress","macForget").contains(action);
+            ExecutorService pool=macCall?macNetwork:"sync".equals(action)?network:io;
             pool.execute(()->{
                 try { Object answer=handle(action,Studio.json(raw));reply(id,true,answer); }
-                catch(Exception e){reply(id,false,ArkError.explain(e));}
+                catch(Exception e){reply(id,false,macCall?MacTransport.explain(e):ArkError.explain(e));}
             });
         }
     }
@@ -168,7 +242,8 @@ public class MainActivity extends Activity {
         switch(action) {
             case "init": return new JSONObject().put("hasKey",app.prefs.contains("secret"))
                 .put("models",new JSONArray(app.prefs.getString("models","[]"))).put("synced",app.prefs.getLong("synced",0))
-                .put("custom",new JSONArray(app.prefs.getString("custom","[]"))).put("draft",Studio.json(app.prefs.getString("draft","{}")));
+                .put("custom",new JSONArray(app.prefs.getString("custom","[]"))).put("draft",Studio.json(app.prefs.getString("draft","{}")))
+                .put("mac",app.mac.status()).put("macServices",macDiscovery.json());
             case "draft": app.prefs.edit().putString("draft",d.toString()).apply();return true;
             case "key":
                 if(app.db.busy()) throw new IOException("请等待当前任务结束后再更换密钥");
@@ -176,6 +251,50 @@ public class MainActivity extends Activity {
                 if(key.length()>2048 || key.matches("(?s).*\\s.*"))throw new IOException("密钥中含有空白或长度异常");
                 app.setKey(key);ModelSync.schedule(app);return true;
             case "sync": return ModelSync.sync(app,d.optBoolean("manual"));
+            case "macDiscover":
+                runOnUiThread(()->{if(watchingMacNetwork)macDiscovery.restart();});
+                return true;
+            case "macPairInspect": return app.mac.inspectPairing(d.getString("endpoint"));
+            case "macPairConfirm": return app.mac.confirmPairing(d.getString("attemptId"));
+            case "macPairCancel": app.mac.cancelPairing(d.getString("attemptId"));return true;
+            case "macPair": {
+                try {
+                    JSONObject status=app.mac.pair(d.getString("attemptId"),d.getString("code"));
+                    macReachable=false;
+                    return status;
+                } catch(MacTransport.Failure error) {
+                    if(!MacPairing.locked(error))throw error;
+                    return new JSONObject().put("pairingLocked",true).put("message",MacPairing.LOCKED_MESSAGE);
+                }
+            }
+            case "macRefresh":
+            case "macAddress": {
+                String previous=app.mac.status().optString("endpoint");
+                JSONObject status;
+                try {status=app.mac.refresh("macAddress".equals(action)?d.getString("endpoint"):null,macDiscovery.snapshot());}
+                catch(Exception error){macReachable=false;throw error;}
+                boolean reconnected=!macReachable||!previous.equals(status.optString("endpoint"));
+                macReachable=true;
+                MacConnection.Session session=app.mac.session();
+                if(session!=null && app.db.resumeMac(session.serverId,session.deviceId,reconnected))app.wake();
+                return status;
+            }
+            case "macForget":
+                app.mac.forget();macReachable=false;return app.mac.status();
+            case "macImage": return macImage(d);
+            case "macMask": {
+                JSONObject job=app.db.find(d.getString("id"));
+                if(job==null||!"inpaint".equals(job.getJSONObject("body").optString("operation")))
+                    throw new IOException("局部编辑任务不可用。");
+                return new JSONObject(MacJobs.readSnapshot(app,job.getJSONObject("body"))).getJSONArray("strokes");
+            }
+            case "macReferenceSize": {
+                int[] size=MacImages.dimensions(MacJobs.input(app,d.getString("ref")),null);
+                return new JSONObject().put("width",size[0]).put("height",size[1]);
+            }
+            case "macPick":
+                runOnUiThread(()->openPicker(43,"macUpscale",false));
+                return true;
             case "modelCache": return ModelSync.cache(app);
             case "readPhotos": {
                 JSONArray requested=d.getJSONArray("files");
@@ -192,7 +311,14 @@ public class MainActivity extends Activity {
                 }
                 return marked;
             }
-            case "editPhoto": return importRef(ImageDecoder.createSource(fileFrom(d)));
+            case "editPhoto": {
+                File work=fileFrom(d);
+                String ref=importRef(ImageDecoder.createSource(work));
+                try(InputStream in=new FileInputStream(work)) {
+                    MacImages.snapshot(in,new File(app.refs,ref+".original"));
+                } catch(IOException ignored) {}
+                return ref;
+            }
             case "custom": app.prefs.edit().putString("custom",d.getJSONArray("list").toString()).commit();return true;
             case "jobs": {
                 long rev=app.db.revision.get();
@@ -200,8 +326,10 @@ public class MainActivity extends Activity {
                 JSONArray rows=app.db.all();
                 for(int i=0;i<rows.length();i++) {
                     JSONObject row=rows.getJSONObject(i);
-                    if(Arrays.asList("failed","not_sent","uncertain","download_error").contains(row.optString("state")))
-                        row.put("refKeys",referenceKeys(row.getJSONObject("body").optJSONArray("refs")));
+                    JSONObject body=row.getJSONObject("body");
+                    body.remove("macRequest");
+                    if(!MacJobs.isMac(body) && Arrays.asList("failed","not_sent","uncertain","download_error").contains(row.optString("state")))
+                        row.put("refKeys",referenceKeys(body.optJSONArray("refs")));
                     JSONArray imgs=row.getJSONObject("result").optJSONArray("images");
                     for(int k=0;imgs!=null && k<imgs.length();k++) {
                         JSONObject image=imgs.getJSONObject(k);
@@ -212,8 +340,14 @@ public class MainActivity extends Activity {
                 return new JSONObject().put("revision",rev).put("rows",rows);
             }
             case "submit": {
+                JSONObject b=d.getJSONObject("body");
+                if(MacJobs.isMac(b)) {
+                    String id=MacJobs.enqueue(app,b);
+                    app.wake();
+                    return id;
+                }
                 if(app.key().isEmpty()) throw new IOException("请先连接方舟 API Key");
-                String id=d.getString("id"); JSONObject b=d.getJSONObject("body");
+                String id=d.getString("id");
                 if(!Studio.safe(id) || (b.optString("prompt").trim().isEmpty() && !b.optBoolean("layers")) || b.optString("model").trim().isEmpty())throw new IOException("请填写模型与提示词");
                 int count=b.getInt("count"), refs=b.getJSONArray("refs").length();
                 boolean separate=b.optBoolean("separate") && !b.optBoolean("layers");
@@ -232,14 +366,28 @@ public class MainActivity extends Activity {
                     if(b.optBoolean("transparent") && !input.getName().endsWith(".png"))
                         throw new IOException("此模型生成透明背景需要带透明通道的 PNG 参考图");
                 }
+                PromptReferences.serialize(b,b.getJSONArray("refs"),false);
                 if(separate && count>1) app.db.addCopies(id,b,count);
                 else app.db.add(id,b);
                 app.wake();return id;
             }
-            case "cancel": return app.db.transition(d.getString("id"),"queued","cancelled");
-            case "recover":
-                if(app.db.transition(d.getString("id"),"download_error","fetching")){app.wake();return true;}
-                return false;
+            case "cancel": {
+                String id=d.getString("id");
+                JSONObject job=app.db.find(id);
+                if(job!=null && MacJobs.isMac(job.getJSONObject("body"))) {
+                    if(!app.db.requestMacCancel(id))return false;
+                    app.wake();return true;
+                }
+                return app.db.transition(id,"queued","cancelled");
+            }
+            case "recover": {
+                String id=d.getString("id");
+                JSONObject job=app.db.find(id);
+                boolean ready=job!=null && (MacJobs.isMac(job.getJSONObject("body"))?app.db.recoverMac(id):
+                    app.db.transition(id,"download_error","fetching"));
+                if(ready)app.wake();
+                return ready;
+            }
             case "delete": return deleteJobs(new JSONArray().put(d.getString("id")))==1;
             case "deleteMany": return deleteJobs(d.getJSONArray("ids"));
             case "restoreLink": {
@@ -284,6 +432,7 @@ public class MainActivity extends Activity {
                 Intent pick=new Intent(this,AlbumActivity.class)
                     .putExtra(AlbumActivity.LIMIT,Math.min(14,limit+sources.size()))
                     .putExtra(AlbumActivity.DRAFT,draftRefs.toString())
+                    .putExtra(AlbumActivity.UPSCALE_AVAILABLE,app.mac.status().has("endpoint"))
                     .putStringArrayListExtra(AlbumActivity.EXISTING,sources)
                     .putStringArrayListExtra(AlbumActivity.FILES,files);
                 runOnUiThread(()->startActivityForResult(pick,41));
@@ -318,9 +467,13 @@ public class MainActivity extends Activity {
             if(!Studio.safe(id))continue;
             JSONObject job=app.db.find(id);
             if(job==null)continue;
-            int removed=app.db.getWritableDatabase().delete("jobs","id=? AND state NOT IN ('queued','sending','fetching')",new String[]{id});
+            int removed=app.db.getWritableDatabase().delete("jobs","id=? AND state NOT IN "+Store.ALL_ACTIVE,new String[]{id});
             if(removed==0)continue;
             count++;
+            if(MacJobs.isMac(job.optJSONObject("body"))) {
+                for(String suffix:Arrays.asList("-0","-0.part","-0.thumb","-0.thumb.part"))
+                    new File(app.images,id+suffix).delete();
+            }
             JSONArray images=job.optJSONObject("result").optJSONArray("images");
             for(int k=0;images!=null && k<images.length();k++) {
                 String name=images.optJSONObject(k).optString("file");
@@ -420,6 +573,20 @@ public class MainActivity extends Activity {
             });
             return;
         }
+        if((request==43 || request==41 && data.getBooleanExtra(AlbumActivity.UPSCALE,false)) && data.getData()!=null) {
+            picker="";
+            Uri uri=data.getData();
+            io.execute(()->{
+                try {
+                    String ref=data.getStringExtra("macRef");
+                    JSONObject source=ref==null?snapshotForMac(uri):macImage(new JSONObject().put("ref",ref));
+                    js("window.receiveUpscale && window.receiveUpscale("+source+")");
+                }
+                catch(Exception e){notifyUI(MacTransport.explain(e));}
+                finally {if(PictureProvider.isCapture(uri))PictureProvider.captureFile(this,uri).delete();}
+            });
+            return;
+        }
         if(request!=41)return;
         picker="";List<Uri> uris=new ArrayList<>();ClipData clip=data.getClipData();
         if(clip!=null)for(int i=0;i<Math.min(14,clip.getItemCount());i++)uris.add(clip.getItemAt(i).getUri());
@@ -433,6 +600,7 @@ public class MainActivity extends Activity {
                     names.put(name);
                     imported.put(uri.toString(),name);
                     app.prefs.edit().putString("source."+name,uri.toString()).apply();
+                    try { cacheOriginal(name,uri); } catch(Exception ignored) {}
                 }
                 catch(Exception e){failed++;}
                 finally{
@@ -458,6 +626,55 @@ public class MainActivity extends Activity {
             js("window.receiveReferences && window.receiveReferences("+failures+")");
         });
     }
+    private void cacheOriginal(String ref, Uri uri) throws IOException {
+        try(InputStream input=getContentResolver().openInputStream(uri)) {
+            if(input==null)throw new IOException("相册原图不可用，请重新选择。");
+            MacImages.snapshot(input,new File(app.refs,ref+".original"));
+        } catch(SecurityException e) {throw new IOException("已失去相册原图读取权限，请重新选择。",e);}
+    }
+
+    private JSONObject macImage(JSONObject data) throws Exception {
+        if(data.has("ref")) {
+            String ref=data.getString("ref");
+            MacJobs.input(app,ref);
+            if(!ref.endsWith(".source")&&!new File(app.refs,ref+".original").isFile()) {
+                String uri=app.prefs.getString("source."+ref,"");
+                if(uri.isEmpty())throw new IOException("原图快照不可用，请从相册重新选择原图。");
+                cacheOriginal(ref,Uri.parse(uri));
+            }
+            return describeMacImage(ref,MacJobs.original(app,ref));
+        }
+        try(InputStream input=new FileInputStream(fileFrom(data))) {return snapshotForMac(input);}
+    }
+
+    private JSONObject snapshotForMac(Uri uri) throws Exception {
+        try(InputStream input=getContentResolver().openInputStream(uri)) {
+            if(input==null)throw new IOException("相册原图不可用，请重新选择。");
+            return snapshotForMac(input);
+        } catch(SecurityException e) {throw new IOException("已失去相册原图读取权限，请重新选择。",e);}
+    }
+
+    private JSONObject snapshotForMac(InputStream input) throws Exception {
+        String ref=Studio.id()+".source";
+        File file=new File(app.refs,ref);
+        try {
+            MacImages.snapshot(input,file);
+            return describeMacImage(ref,ref);
+        } catch(Exception error) {
+            file.delete();
+            new File(app.refs,ref+".thumb").delete();
+            throw error;
+        }
+    }
+
+    private JSONObject describeMacImage(String ref,String original) throws Exception {
+        File source=MacJobs.input(app,original);
+        int[] size=MacImages.dimensions(source,null);
+        File preview=new File(app.refs,original+".thumb");
+        if(!preview.isFile())MacImages.preview(source,preview);
+        return new JSONObject().put("ref",ref).put("preview",preview.getName()).put("width",size[0]).put("height",size[1]);
+    }
+
     private String importRef(ImageDecoder.Source source)throws Exception {
         // Normalise orientation and constrain memory, upload size and reference geometry.
         Bitmap b=ImageDecoder.decodeBitmap(source,(decoder,info,src)->{
