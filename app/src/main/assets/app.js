@@ -3,6 +3,11 @@ const $=s=>document.querySelector(s);
 const e=v=>String(v==null?'':v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const paths={
  create:'M4 16.5V20h3.5L20 7.5l-3.5-3.5z M14.8 5.8l3.5 3.5',
+ brush:'M9 14l8.3-9.3a1.8 1.8 0 0 1 2.6 2.5L10 16 M9 14c-2.2-.5-3.7.9-4 2.6-.2 1.2-.5 2.1-1.5 2.9 3.3.9 6.6-.4 6.9-3.1.1-1.1-.5-2.2-1.4-2.4z',
+ erase:'m7 12 6 6m-2.5 1H8l-4.4-4.4a1.5 1.5 0 0 1 0-2.1l8.1-8.1a1.5 1.5 0 0 1 2.1 0l6.1 6.1a1.5 1.5 0 0 1 0 2.1l-6.4 6.4H21',
+ move:'M12 3v18M3 12h18M9 6l3-3 3 3m-6 12 3 3 3-3M6 9l-3 3 3 3m12-6 3 3-3 3',
+ undo:'M4 11h11a4 4 0 0 1 0 8h-2M9 6l-5 5 5 5',
+ trash:'M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 10v6m4-6v6',
  gallery:'M4 5h16v14H4z M4 16l5-5 4 4 3-3 4 4 M15 9h.01',
  tasks:'M7 5h13M7 12h13M7 19h13M3 5h.02M3 12h.02M3 19h.02',
  settings:'M4 7h7m5 0h4M4 17h2m5 0h9 M14 4v6m-5 4v6',
@@ -11,7 +16,8 @@ const paths={
  book:'M12 7C9 5 6 5 3 5v13c3 0 6 0 9 2 3-2 6-2 9-2V5c-3 0-6 0-9 2zm0 0v13',
  close:'M6 6l12 12M18 6L6 18',plus:'M12 5v14M5 12h14',check:'M4 12l5 5L20 6',
  sync:'M20 8a8 8 0 0 0-14-2L3 9m0-5v5h5m-4 7a8 8 0 0 0 14 2l3-3m0 5v-5h-5',
- save:'M12 3v13m-5-5 5 5 5-5M4 17v4h16v-4',share:'M12 15V3m-4 4 4-4 4 4M6 11H4v10h16V11h-2',
+ save:'M12 3v13m-5-5 5 5 5-5M4 17v4h16v-4',
+ enlarge:'M14 4h6v6M20 4l-6 6M10 20H4v-6m0 6 6-6',compare:'M3 5h18v14H3zM12 3v18m-6-8 2-2 2 2m4 1 2-3 2 3',
  filter:'M4 6h16M7 12h10m-7 6h4',
  layers:'M3 8l9-5 9 5-9 5zm0 5 9 5 9-5m-18 5 9 5 9-5',clock:'M12 4a8 8 0 1 0 .01 0m0 4v5l3 2',
  wallet:'M3 6h17v13H3zM15 11h5v4h-5z',key:'M15 4a5 5 0 1 1-3 9l-7 7H2v-3l7-7a5 5 0 0 1 6-6z',
@@ -38,6 +44,7 @@ const badgeHolds={tasks:null,gallery:null};
 let galleryModel='',taskModel='',selecting=false;
 const pickedTasks=new Set(),expandedStacks=new Set();
 let autoSyncAt=0;
+let referencesBusy=true,referenceRetry,modelChoice=0;
 function api(action,data){
  return new Promise((resolve,reject)=>{
   if(!window.StudioNative){reject(new Error('请在映序安卓应用中打开'));return;}
@@ -157,7 +164,7 @@ function refstrip(){
    '<img src="refs/'+e(r)+'.thumb" alt="参考图 '+(i+1)+(base?'，局部编辑底图':'')+'">'+
    (base?'<span class="repair-label">修复底图</span>':''),'ref-preview',r)+button('unref','×','ref-remove',i,'aria-label="移除参考图"')+'</div>';
  }).join('')+(allowedRefs()>0?button('pick',icon('plus')+'<span class="ref-label">'+
-  (draft.refs.length>=allowedRefs()?'选图':'参考图')+'</span>','refslot'):'')+'</div>';
+  (draft.refs.length>=allowedRefs()?'选图':'参考图')+'</span>','refslot','',referencesBusy?'disabled':''):'')+'</div>';
 }
 function createPage(){
  normalize();const b=body(),local=isMac(),total=local?null:cost(b,null);
@@ -165,10 +172,11 @@ function createPage(){
  refstrip()+'<div class="workarea"><div class="promptbox"><div class="spread"><label for="prompt">画面描述</label><span class="counter" id="chars">'+draft.prompt.length+' 字</span></div><textarea id="prompt" placeholder="写下主体、场景、光线，或你想修改的细节…">'+e(draft.prompt)+'</textarea><p id="referenceIssue" class="sub reference-issue" hidden></p></div>'+
  '<div class="right"><div class="gridparams">'+button('models','<span><small>生成模型</small><b>'+e(nameFor(draft.model))+'</b></span>'+icon('down'),'param')+
  button('params','<span><small>画布设置</small><b>'+e(local?(macOp()==='inpaint'?'局部编辑':b.size||'自动尺寸'):b.layers?'图层拆分':b.size?b.ratio+' · '+b.level:'模型默认')+'</b></span>'+icon('down'),'param')+'</div>'+
- button('generate','<span class="inline">'+icon('spark')+'生成图片</span><span class="end">'+(local?'本地推理':total?'预计 '+money(total.total):'价格待核对')+'</span>','primary generate','',submitting?'disabled':'')+
+ button('generate','<span class="inline">'+icon('spark')+'生成图片</span><span class="end">'+(local?'本地推理':total?'预计 '+money(total.total):'价格待核对')+'</span>','primary generate','',submitting||referencesBusy?'disabled':'')+
  '<div class="more">'+button('params',icon('settings')+(b.layers?'图层上限 '+b.layerMax:'参数 · '+(b.count>1?'最多 ':'')+b.count+' 张'))+(!local?button('cost',icon('wallet')+'费用明细'):'')+'</div></div></div>';
 }
-function photos(){return jobs.reduce((all,j)=>all.concat((j.result.images||[]).filter(p=>p.ready).map(p=>({p:p,j:j}))),[]);}
+function availablePhoto(image){return image.ready&&!image.deleted;}
+function photos(){return jobs.reduce((all,j)=>all.concat((j.result.images||[]).filter(availablePhoto).map(p=>({p:p,j:j}))),[]);}
 function empty(ic,t,description){return '<div class="empty">'+icon(ic)+'<h3>'+e(t)+'</h3><p class="sub">'+e(description)+'</p>'+button('nav','去创作 '+icon('arrow'),'secondary','create')+'</div>';}
 function modelFilters(items,selected,action) {
  const models=new Map(items.map(j=>[j.body.model,j.body.name||nameFor(j.body.model)]));
@@ -188,7 +196,7 @@ function galleryPage(){
 const failedStates=['failed','not_sent','uncertain','download_error','mac_blocked'];
 const successfulStates=['done','partial','recovered'];
 function taskThumb(job) {
- const image=(job.result.images||[]).find(item=>item.ready);
+ const image=(job.result.images||[]).find(availablePhoto);
  const ref=(job.body.macInputs||job.body.refs||[])[0];
  if(ref&&failedStates.includes(job.state))return '<img src="refs/'+e(ref)+'.thumb" alt="首张输入参考图">';
  return image?'<img src="images/'+e(image.file)+'.thumb" alt="生成图片">':icon('frame');
@@ -261,7 +269,7 @@ function settingsPage(){return title('设置')+'<div class="section-title"><h2>�
  row('custom','自定义推理接入点','添加 Endpoint ID 或新的 Model ID')+'<div class="section-title"><h2>使用与计费</h2></div>'+
  row('ledger','本机费用统计','按任务提交时的单价快照汇总')+row('doc','官方模型价格','查看火山方舟最新公布的计费规则','docs/model-pricing')+
  row('doc','错误码手册','按错误码排查权限、配额、请求参数等问题','docs/error-codes')+row('doc','图片生成指南','查看模型能力、参考图限制和调用示例','docs/image-generation-tutorial')+
- '<div class="panel"><h3>映序 · Frame Studio</h3><p class="sub">版本 1.7 · 火山方舟北京地域，标准按量 API。图片和任务记录保存在此设备。</p></div>';}
+ '<div class="panel"><h3>映序 · Frame Studio</h3><p class="sub">版本 1.8.4 · 火山方舟北京地域，标准按量 API。图片和任务记录保存在此设备。</p></div>';}
 function animateIn(element) {
  if(!element.animate || matchMedia('(prefers-reduced-motion: reduce)').matches)return;
  const animation=element.animate([{opacity:0,transform:'translateY(9px)'},{opacity:1,transform:'translateY(0)'}],
@@ -371,7 +379,7 @@ function taskSheet(j){
  const b=j.body,r=j.result,done=['done','partial','download_error','fetching'].includes(j.state),images=r.images||[];
  const inputs=(b.macInputs||b.refs||[]).map((ref,index)=>
   button('taskRef','<img src="refs/'+e(ref)+'.thumb" alt="输入图片 '+(index+1)+'">','',ref));
- const outputs=images.filter(item=>item.ready).map((item,index)=>
+ const outputs=images.filter(availablePhoto).map((item,index)=>
   button('photo','<img src="images/'+e(item.file)+'.thumb" alt="输出图片 '+(index+1)+'">','',item.file));
  const mediaGroup=(label,items)=>'<section class="task-media-group"><h3>'+label+'</h3><div class="task-media-items">'+
   (items.length?items.join(''):'<span class="task-media-empty">无</span>')+'</div></section>';
@@ -425,7 +433,7 @@ function modalContent(){
  case 'compare':{
   const it=photos().find(x=>x.p.file===context);
   if(!it)return ['输入与输出','作品原图不可用'];
-  const input=it.j.body.macInputs?.[0];
+  const input=photoInput(it.j.body);
   return ['输入与输出',imageViewer(compareInput?'refs/'+input+'.thumb':'images/'+context,compareInput?'输入底图':'生成原图')+
    '<div class="buttons">'+button('compareSide','输入底图','choice'+(compareInput?' selected':''),'input')+
    button('compareSide','生成原图','choice'+(!compareInput?' selected':''),'output')+'</div>'];
@@ -443,36 +451,147 @@ function modalContent(){
  }
  case 'task':return taskSheet(jobs.find(j=>j.id===context));
  case 'deleteAsk':return ['删除这条任务？','<p>将删除本机任务记录及其作品集原图。已导出至系统相册的副本可继续使用。</p>'+button('delete','删除任务与原图','dangerbtn wide',context)];
+ case 'deletePhotoAsk':return ['删除这张图片？','<p>本机作品集中的这张图片将被删除。任务记录和已保存到系统相册的副本会保留。</p>'+
+  button('deletePhoto','确认删除','dangerbtn wide',context)];
  case 'removeCustom':return ['移除接入点？','<p>将从本机模型选择列表中移除此接入点。</p>'+button('doRemove','移除接入点','dangerbtn wide',context)];
  case 'deleteBatchAsk':return ['删除 '+pickedTasks.size+' 条任务？','<p>将删除选中任务和对应的作品集原图。已保存到系统相册的副本会保留。</p>'+button('deleteBatch','确认删除','dangerbtn wide')];
  case 'restoreLink':return ['下载找回的链接','<p class="sub">粘贴 TLS 日志或 TOS 控制台里的原图链接，下载不会再次提交生图。</p>'+
  group('原图链接','<input id="recoveryUrl" type="text" inputmode="url" placeholder="https://…">')+
  '<p id="formError" class="inlineerr"></p>'+button('paste','粘贴链接','textbtn','recoveryUrl')+button('applyRestoreLink','开始下载','primary wide',context)];
- case 'refPhoto':return ['参考图预览',imageViewer('refs/'+context+(context.endsWith('.source')||context.endsWith('.original')?'.thumb':''),'参考图')+
-  macPhotoOptions('ref',context.endsWith('.original')?context.slice(0,-9):context)];
+ case 'refPhoto':return ['参考图预览',imageViewer('refs/'+context+(context.endsWith('.source')||context.endsWith('.original')?'.thumb':''),'参考图',null,
+  photoActions('ref',context.endsWith('.original')?context.slice(0,-9):context))];
  case 'photo':{
   const it=photos().find(x=>x.p.file===context);
   if(!it)return ['作品预览','原图不可用'];
-  const footer='<div class="buttons">'+button('editPhoto',icon('create')+'<span class="action-label">编辑图片</span>','primary',context)+
-   button('save',icon('save')+'<span class="action-label">保存到相册</span>','primary',context)+
-   button('reuse',icon('sync')+'<span class="action-label">复用参数</span>','secondary',it.j.id)+
-   button('share',icon('share')+'<span class="action-label">分享原图</span>','secondary',context)+'</div>';
-  return ['作品预览',imageViewer('images/'+context,'生成原图',photoNeighbors())+entry('尺寸',it.p.size)+entry('模型',it.j.body.name)+
+  const b=it.j.body,r=it.j.result;
+  const footer='<div class="buttons">'+button('reuse',icon('sync')+'<span class="action-label">复用参数</span>','primary',it.j.id)+
+   button('save',icon('save')+'<span class="action-label">保存到相册</span>','primary',context)+'</div>';
+  const prompt=b.prompt||(isMac(b)?macOperations[b.operation]:'按图片内容自动拆分图层');
+  return ['作品预览',imageViewer('images/'+context,'生成原图',photoNeighbors())+photoActions('file',context,photoInput(b))+
+   '<section class="preview-meta preview-prompt"><h3>提示词</h3><p class="summary collapsed" id="previewPrompt">'+e(prompt)+'</p>'+
+   button('togglePrompt','展开','textbtn','','aria-controls="previewPrompt" aria-expanded="false" hidden')+'</section>'+
+   '<section class="preview-meta"><h3>生成参数</h3>'+entry('尺寸',it.p.size||'未知')+
    (it.p.name?entry('图层',it.p.name):'')+
-   '<section class="preview-meta"><h3>提示词和生成参数</h3>'+photoParams(it.j.body,it.j.result)+'</section>'+
-   macPhotoOptions('file',context)+'<div class="buttons">'+button('usePhotoRef','作为参考图','secondary',context)+
-   (isMac(it.j.body)&&it.j.body.macInputs?.length?button('compare','对比输入图','secondary',context):'')+'</div>',footer];
+   (isMac(b)?macParameterDetails(b,r,false):entry('模型',b.name||b.model)+photoParams(b))+'</section>'+
+   button('deletePhotoAsk','删除图片','dangerbtn wide preview-delete',context),footer];
  }
- case 'editPhoto':return ['编辑图片',group('编辑提示词','<textarea id="editPrompt" class="edit-prompt" placeholder="描述要修改的内容"></textarea>')+
- button('paste','粘贴提示词','textbtn','editPrompt')+button('applyEdit','带入创作台','primary wide',context)];
+ case 'editPhoto':return ['编辑图片',photoEditSheet(),button('applyEdit','带入创作台','primary wide','',photoEdit.loading?'disabled':'')];
  case 'ledger':return ['本机费用统计',ledger()];
  }
  return ['映序',''];
 }
-function photoParams(b,r){
- if(isMac(b))return '<p class="summary">'+e(b.prompt)+'</p>'+macParameterDetails(b,r);
- return '<p class="summary">'+e(b.prompt||'按图片内容自动拆分图层')+'</p>'+
- entry('模型 ID',b.model)+entry('请求尺寸',b.layers?b.level:b.size||'模型默认')+
+function photoInput(b){return (b.macInputs||b.refs)?.[0];}
+function photoActions(kind,id,input){
+ const action=(name,glyph,label)=>button(name,icon(glyph)+'<span>'+label+'</span>',
+  (kind==='ref'?'image-overlay-action ':'')+'viewer-action',id,'data-kind="'+kind+'"');
+ return '<div class="viewer-actions'+(kind==='file'?' preview-actions':'')+'">'+action('editPhoto','create','编辑')+action('upscaleOpen','enlarge','放大')+
+  (input?action('compare','compare','对比'):'')+'</div>';
+}
+let photoEdit=null;
+function photoEditModels(){
+ const local=macModels().filter(model=>model.ready&&(capability(model,'img2img')||capability(model,'inpaint')));
+ const cloud=options().filter(model=>modelProfile(model.id,config.custom,config.models).refs>0);
+ return local.map(model=>({id:macModelKey(config.mac.serverId,model.id),name:model.name,
+  masked:!!capability(model,'inpaint'),normal:!!capability(model,'img2img'),model})).concat(
+  cloud.map(model=>({id:model.id,name:nameFor(model.id),normal:true})));
+}
+function normalPhotoEditModel(edit){
+ return edit.selected.normal?edit.selected:
+  edit.models.find(model=>model.normal&&model.model)||edit.models.find(model=>model.normal);
+}
+function photoEditSheet(){
+ const edit=photoEdit;
+ const choices=edit.models.map(model=>{
+  const selected=model===edit.selected;
+  const label=model.name+(model.masked?(model.normal?' · 支持涂抹':' · 仅支持涂抹'):'');
+  return button('choosePhotoEditModel','<span>'+e(label)+'</span>'+(selected?icon('check'):''),
+   'photo-model-option',model.id,'aria-pressed="'+selected+'"');
+ }).join('');
+ const picker='<details class="photo-model-picker"><summary aria-label="编辑模型，'+e(edit.selected.name)+'"><span>'+
+  e(edit.selected.name)+'</span>'+icon('down')+'</summary><div class="photo-model-options">'+choices+'</div></details>';
+ let tools='';
+ if(edit.selected.masked){
+  const normal=normalPhotoEditModel(edit);
+  if(normal&&normal!==edit.selected)tools='<p class="sub">未涂抹时使用「'+e(normal.name)+'」进行普通编辑。</p>';
+  if(edit.loading)tools+='<p class="sub">正在准备涂抹画布…</p>';
+  else if(edit.mask)tools+=group(normal?'涂抹范围（可选）':'涂抹范围',maskSheet());
+ }
+ return group('编辑模型',picker)+
+  group('编辑提示词','<textarea id="editPrompt" class="edit-prompt" placeholder="描述要修改的内容">'+e(edit.prompt)+'</textarea>')+
+  button('paste','粘贴提示词','textbtn','editPrompt')+tools;
+}
+function positionPhotoModelOptions(){
+ const picker=$('.photo-model-picker[open]');
+ if(!picker)return;
+ const list=picker.querySelector('.photo-model-options');
+ const field=picker.querySelector('summary').getBoundingClientRect();
+ const body=picker.closest('.sheet-body').getBoundingClientRect();
+ if(field.top>=body.bottom||field.bottom<=body.top){picker.open=false;return;}
+ const below=body.bottom-field.bottom-8,above=field.top-body.top-8;
+ const preferAbove=above>below&&below<Math.min(list.scrollHeight,window.innerHeight*.34);
+ picker.classList.toggle('opens-up',preferAbove);
+ list.style.setProperty('--model-menu-space',Math.max(0,preferAbove?above:below)+'px');
+}
+async function openPhotoEdit(kind,id){
+ const source=kind==='file'?photos().find(x=>x.p.file===id)?.j.body:draft;
+ if(!source)throw new Error('原图不可用');
+ const models=photoEditModels();
+ const selected=models.find(m=>m.id===source.model)||
+  models.find(m=>m.normal&&!!m.model===isMac(source))||models.find(m=>m.normal)||models[0];
+ if(!selected)throw new Error('请先配置支持图片编辑的模型。');
+ photoEdit={kind,id,context,source,models,selected,prompt:'',mask:null,loading:false,applying:false};
+ maskEdit=null;
+ show('editPhoto');
+ await loadPhotoEditModel(selected.id);
+}
+async function loadPhotoEditModel(id){
+ const edit=photoEdit;
+ edit.selected=edit.models.find(model=>model.id===id);
+ if(!edit.selected.masked||edit.mask){
+  maskEdit=edit.selected.masked?edit.mask:null;
+  renderModal();return;
+ }
+ if(edit.loading)return;
+ edit.loading=true;
+ renderModal();
+ try{
+  const data=edit.kind==='file'?{file:edit.id}:{ref:edit.id};
+  const source=await api('macImage',data);
+  edit.mask=newMaskEdit(source);
+ }finally{
+  edit.loading=false;
+  if(photoEdit===edit&&modal==='editPhoto'){
+   maskEdit=edit.selected.masked?edit.mask:null;
+   renderModal();
+  }
+ }
+}
+async function applyPhotoEdit(){
+ const edit=photoEdit;
+ if(edit.applying||edit.loading)return;
+ const prompt=edit.prompt.trim();
+ if(!prompt)throw new Error('请描述要修改的内容');
+ const mask=edit.selected.masked&&edit.mask&&hasMask(edit.mask);
+ const selected=mask?edit.selected:normalPhotoEditModel(edit);
+ if(!selected)throw new Error('当前没有可用的普通编辑模型，请涂抹要修改的区域。');
+ edit.applying=true;
+ try{
+  let ref=edit.id;
+  if(mask)ref=edit.mask.source.ref;
+  else if(edit.kind==='file'||(!selected.model&&edit.id.endsWith('.source')))ref=await api('editPhoto',{[edit.kind]:edit.id});
+  if(photoEdit!==edit||modal!=='editPhoto')return;
+  rememberMacLoras();
+  const macLoraSelections=draft.macLoraSelections;
+  draft=Object.assign({},initial,selected.id===edit.source.model?edit.source:{},{
+   source:selected.model?'mac':'ark',model:selected.id,prompt,promptRefs:[],refs:[ref],operation:undefined,macBase:undefined,
+   macBaseSize:undefined,strokes:[],macOptions:{},macLoraSelections,macEdge:'',count:1,watermark:false,layers:false,transparent:false});
+  if(selected.model)selectMac(selected.model);
+  if(mask)setDraftMask(edit.mask);
+  navigate('create');redraw();prepareMacDimensions().catch(()=>{});$('#prompt').focus();
+ }finally{edit.applying=false;}
+}
+function photoParams(b){
+ return entry('模型 ID',b.model)+entry('请求尺寸',b.layers?b.level:b.size||'模型默认')+
  entry('画面比例',b.layers?'参考图比例':b.ratio==='自定义'?b.ratioWidth+':'+b.ratioHeight:b.ratio||'模型默认')+
  entry('生成方式',b.layers?'图层拆分':b.refs.length?'参考图生成':'文生图')+
  entry('参考图',b.refs.length+' 张')+entry('输出张数'+(b.layers?'上限':''),b.layers?b.layerMax:b.count)+
@@ -483,16 +602,30 @@ function renderModal(preserveScroll=true) {
  if(!modal)return;
  maskCanvas?.observer.disconnect();maskCanvas=null;
  const sheet=$('#sheet'),oldBody=sheet.querySelector('.sheet-body');
+ const modelFocused=modal==='editPhoto'&&document.activeElement?.matches('.photo-model-picker summary');
  const scroll=preserveScroll&&oldBody?oldBody.scrollTop:0;
  const [heading,content,footer]=modalContent();
  sheet.classList.toggle('task-detail-sheet',modal==='task');
  sheet.classList.toggle('photo-preview-sheet',modal==='photo'&&!!footer);
  sheet.innerHTML='<div class="sheethead"><h2>'+e(heading)+'</h2>'+button('close',icon('close'),'circle','','aria-label="关闭"')+'</div>'+
   '<div class="sheet-body">'+content+'</div>'+(footer?'<div class="sheet-footer">'+footer+'</div>':'');
- sheet.querySelector('.sheet-body').scrollTop=scroll;
+ const sheetBody=sheet.querySelector('.sheet-body');
+ sheetBody.scrollTop=scroll;
+ if(modelFocused)sheet.querySelector('.photo-model-picker summary').focus({preventScroll:true});
+ const picker=sheet.querySelector('.photo-model-picker');
+ if(picker){
+  picker.addEventListener('toggle',positionPhotoModelOptions);
+  sheetBody.addEventListener('scroll',positionPhotoModelOptions,{passive:true});
+ }
  setupViewer(sheet.querySelector('.viewer'),modal==='photo'?slidePhoto:null);
- if(modal==='mask')setupMask($('#maskCanvas'));
+ if(modal==='mask'||modal==='editPhoto')setupMask($('#maskCanvas'));
+ updatePreviewPrompt();
  sheet.querySelector('.mac-advanced')?.addEventListener('toggle',event=>{draft.macAdvanced=event.target.open;saveDraft();});
+}
+function updatePreviewPrompt(){
+ const prompt=$('#previewPrompt');
+ if(prompt?.classList.contains('collapsed'))
+  $('#sheet [data-act="togglePrompt"]').hidden=prompt.scrollHeight<=prompt.clientHeight;
 }
 function photoNeighbors() {
  const list=previousPhotoTask?photos().filter(item=>item.j.id===previousPhotoTask):galleryPhotos();
@@ -614,6 +747,8 @@ async function markViewed(files) {
 }
 window.addEventListener('scroll',scheduleSeen,{passive:true,capture:true});
 window.addEventListener('resize',scheduleSeen,{passive:true});
+window.addEventListener('resize',updatePreviewPrompt,{passive:true});
+window.addEventListener('resize',positionPhotoModelOptions,{passive:true});
 document.addEventListener('load',event=>{if(event.target.tagName==='IMG')scheduleSeen();},true);
 document.addEventListener('animationend',scheduleSeen);
 function updateModels(result) {
@@ -641,21 +776,71 @@ async function sync(showList){
  finally{syncing=false;if(modal==='models')renderModal();}
 }
 function setDraftModel(id){if(id!==draft.model){draft.model=id;draft.count=1;}}
+function referenceResolution(){
+ if(!draft.refs.length)return null;
+ let size,ratio,aspect;
+ if(isMac()){
+  const op=macOp();
+  if(!draft.macEdge&&draft.macRatio!=='自由')return null;
+  size=macDraftSize(capability(macModel(),op),op)?.join('x')||draft.macEdge;
+  ratio=op==='inpaint'||!draft.macRatio?'原图':draft.macRatio==='自由'?'自定义':draft.macRatio;
+ }else{
+  const previous=body();
+  size=draft.layers?previous.level:previous.size;
+  ratio=draft.layers||draft.ratio===RATIOS[0]?'原图':draft.ratio;
+  if(ratio==='自定义')aspect=[Number(draft.ratioWidth),Number(draft.ratioHeight)];
+ }
+ const area=resolutionPixels(size);
+ if(!area)return null;
+ const [width,height]=aspect||(ratio.includes(':')?ratio.split(':'):(SIZES[size]?.[0]||size).split('x')).map(Number);
+ return {area,ratio,width,height};
+}
+function matchArkResolution(target){
+ if(!target)return;
+ const p=profile();
+ if(!p.levels.length)return;
+ draft.ratio=target.ratio==='原图'?RATIOS[0]:RATIOS.includes(target.ratio)?target.ratio:'自定义';
+ if(draft.ratio==='自定义')[draft.ratioWidth,draft.ratioHeight]=[target.width,target.height];
+ const nearest=()=>nearestResolution(p.levels,target.area,level=>
+  resolutionPixels(requestSize(p,level,draft.ratio,draft.ratioWidth,draft.ratioHeight)));
+ let level=nearest();
+ if(!level&&draft.ratio==='自定义'){
+  draft.ratio=RATIOS[0];level=nearest();
+ }
+ if(level)draft.level=level;
+}
 function relabelDraft(){Object.assign(draft,relabelReferences(draft.prompt,draft.promptRefs,draft.refs,draft.source));}
 function updateReferenceOrder(){
  endReferencePick();relabelDraft();prepareMacDimensions().catch(()=>{});redraw();
 }
 function changeModel(id){
+ modelChoice++;
+ const resolution=draft.model===id?null:referenceResolution();
+ rememberMacLoras();
  setDraftModel(id);draft.source='ark';draft.operation=undefined;draft.layers=false;draft.transparent=false;draft.format='auto';
+ matchArkResolution(resolution);
  relabelDraft();normalize();close();draw();saveDraft();
+}
+function setReferencesBusy(value){
+ referencesBusy=value;
+ const generateButton=$('#app .generate'),pickButton=$('#app [data-act="pick"]');
+ if(generateButton)generateButton.disabled=submitting||value;
+ if(pickButton)pickButton.disabled=value;
 }
 window.addReferences=function(names,failed){
  const n=Math.max(0,allowedRefs()-draft.refs.length);draft.refs=draft.refs.concat(names.slice(0,n));normalize();updateReferenceOrder();
  if(failed||names.length>n)toast(failed?'部分图片格式或宽高比不支持':'已达到当前模型参考图上限');
 };
 window.receiveReferences=async function(failed){
+ clearTimeout(referenceRetry);
  try{
-  const changes=await api('pendingRefs'),removed=new Set(changes.removed||[]);
+  const changes=await api('pendingRefs');
+  if(changes.busy){
+   setReferencesBusy(true);
+   referenceRetry=setTimeout(()=>window.receiveReferences(failed),350);
+   return;
+  }
+  const removed=new Set(changes.removed||[]);
   const added=Array.isArray(changes)?changes:changes.added||[];
   if(removed.size)draft.refs=draft.refs.filter(file=>!removed.has(file));
   if(added.length||removed.size||failed||changes.order?.length){
@@ -665,12 +850,14 @@ window.receiveReferences=async function(failed){
     draft.refs=ordered.concat(draft.refs.filter(file=>!ordered.includes(file)));
     updateReferenceOrder();
    }
+   await api('draft',draft);
   }
  }catch(err){toast(err.message);}
+ setReferencesBusy(false);
 };
 function idForRequest(){const bytes=new Uint8Array(16);crypto.getRandomValues(bytes);return Array.from(bytes,n=>n.toString(16).padStart(2,'0')).join('');}
 async function generate(){
- if(submitting)return;
+ if(submitting||referencesBusy)return;
  normalize();
  if(!draft.prompt.trim()&&!draft.layers){toast('先写下想生成的画面');$('#prompt').focus();return;}
  const issue=referenceIssue();
@@ -713,11 +900,18 @@ async function generate(){
  }
 }
 function studioBack(){
+ if(modal==='editPhoto'){
+  const picker=$('.photo-model-picker[open]');
+  if(picker){picker.open=false;picker.querySelector('summary').focus();return true;}
+  const {kind,context:origin}=photoEdit;
+  show(kind==='file'?'photo':'refPhoto',origin);return true;
+ }
+ if(modal==='deletePhotoAsk'||modal==='compare'){show('photo',context);return true;}
  if(modal==='refPhoto'&&previousRefTask){
   const id=previousRefTask;
   previousRefTask='';show('task',id);return true;
  }
- if(modal){if(modal==='compare'){show('photo',context);return true;}if(modal==='restoreLink'){show('task',context);return true;}if(modal==='editPhoto'){show('photo',context);return true;}if(modal==='photo'&&previousPhotoTask){show('task',previousPhotoTask);previousPhotoTask='';}else close();return true;}
+ if(modal){if(modal==='restoreLink'){show('task',context);return true;}if(modal==='photo'&&previousPhotoTask){show('task',previousPhotoTask);previousPhotoTask='';}else close();return true;}
  if(page==='tasks'&&selecting){selecting=false;pickedTasks.clear();draw();return true;}
  if(page!=='create'){navigate('create');return true;}return false;
 }
@@ -741,7 +935,14 @@ async function act(a,v,element){
   const model=macModels().find(x=>x.id===v);
   if(!model?.ready)throw new Error('模型未就绪，请在 Mac 检查权重。');
   if(!model.operations.some(x=>x.id!=='upscale'))throw new Error('请从图片预览打开「高清放大」以使用 SeedVR2。');
-  selectMac(model);relabelDraft();close();redraw();prepareMacDimensions().catch(()=>{});break;
+  const choice=++modelChoice,ref=draft.refs[0];
+  const resolution=draft.model===macModelKey(config.mac.serverId,model.id)?null:referenceResolution();
+  if(resolution&&ref&&!macSizes.has(ref)){
+   await loadMacReferenceSize(ref).catch(()=>{});
+   if(choice!==modelChoice||modal!=='models'||draft.refs[0]!==ref)return;
+  }
+  selectMac(model);matchMacResolution(resolution);
+  relabelDraft();close();redraw();prepareMacDimensions().catch(()=>{});break;
  }
  case 'macSelectService':{
   clearMacPairing();
@@ -774,28 +975,35 @@ async function act(a,v,element){
  case 'macRefresh':case 'macForget':await updateMacConnection(a);break;
  case 'macRatio':draft.macRatio=v==='自动'?'':v;draft.macEdge='';redraw();prepareMacDimensions().catch(()=>{});break;
  case 'macEdge':draft.macEdge=v==='自动'?'':v;redraw();break;
- case 'maskOpen':await openMacImage('mask',element?.dataset.kind||'ref',v);break;
+ case 'maskOpen':await openMacImage('inpaint','ref',v);break;
  case 'upscaleOpen':await openMacImage('upscale',element?.dataset.kind||'ref',v);break;
  case 'submitUpscale':await submitUpscale();break;
  case 'maskApply':applyMask();break;
  case 'maskExit':
-  draft.operation=undefined;draft.strokes=[];draft.macBase=undefined;draft.macBaseSize=undefined;draft.macEdge='';
+  clearDraftMask();
   close();redraw();break;
  case 'maskTool':
   maskEdit.erases=v==='erase';maskEdit.pan=v==='pan';
-  for(const button of document.querySelectorAll('[data-act="maskTool"]'))button.classList.toggle('selected',button===element);
+  for(const tool of document.querySelectorAll('[data-act="maskTool"]'))tool.setAttribute('aria-pressed',String(tool===element));
   break;
- case 'maskZoom':maskCanvas?.zoom(Number(v));break;
  case 'maskUndo':case 'maskClear':maskCanvas?.remove(a==='maskClear');break;
  case 'compare':compareInput=false;show('compare',v);break;
  case 'compareSide':compareInput=v==='input';renderModal();break;
- case 'usePhotoRef':{
-  if(draft.refs.length>=allowedRefs())throw new Error('当前模型没有空余参考图位置，请先调整模型或参考图。');
-  const ref=await api('editPhoto',{file:v});
-  close();navigate('create');window.addReferences([ref],0);break;
+ case 'togglePrompt':{
+  const collapsed=$('#previewPrompt').classList.toggle('collapsed');
+  element.textContent=collapsed?'展开':'收起';
+  element.setAttribute('aria-expanded',String(!collapsed));break;
  }
  case 'taskRef':previousRefTask=context;show('refPhoto',v);break;
- case 'editPhoto':case 'restoreLink':case 'deleteBatchAsk':show(a,v);break;
+ case 'editPhoto':await openPhotoEdit(element.dataset.kind,v);break;
+ case 'choosePhotoEditModel':{
+  const picker=element.closest('.photo-model-picker');
+  picker.open=false;
+  picker.querySelector('summary').focus({preventScroll:true});
+  if(v!==photoEdit.selected.id||photoEdit.selected.masked&&!photoEdit.mask)await loadPhotoEditModel(v);
+  break;
+ }
+ case 'restoreLink':case 'deleteBatchAsk':case 'deletePhotoAsk':show(a,v);break;
  case 'galleryModel':galleryModel=v;draw();break;
  case 'taskModelFilter':show(a,v);break;
  case 'taskModel':taskModel=v;pickedTasks.clear();expandedStacks.clear();close();draw();break;
@@ -821,21 +1029,7 @@ async function act(a,v,element){
  case 'restorePhoto':await api('restorePhoto',{id:v});break;
  case 'applyRestoreLink':
   await api('restoreLink',{id:v,link:$('#recoveryUrl').value});show('task',v);await refresh();break;
- case 'applyEdit':{
-  const prompt=$('#editPrompt').value.trim();
-  if(!prompt)throw new Error('请描述要修改的内容');
-  const item=photos().find(x=>x.p.file===v);
-  if(!item)throw new Error('原图不可用');
-  const ref=await api('editPhoto',{file:v});
-  const source=item.j.body;
-  draft=Object.assign({},initial,source,{prompt,promptRefs:[],refs:[ref],operation:undefined,macBase:undefined,strokes:[],
-   macOptions:{},macEdge:'',count:1,watermark:false,layers:false,transparent:false});
-  if(isMac()){
-   const model=macAvailable('img2img').find(m=>m.id.toLowerCase()===draft.modelId?.toLowerCase())||macAvailable('img2img')[0];
-   if(model)selectMac(model);
-  }
-  navigate('create');redraw();prepareMacDimensions().catch(()=>{});$('#prompt').focus();break;
- }
+ case 'applyEdit':await applyPhotoEdit();break;
  case 'paste':{
   const field=document.getElementById(v);if(!field)break;
   const contents=await api('paste');if(!contents)throw new Error('剪贴板里没有文字');
@@ -863,8 +1057,12 @@ async function act(a,v,element){
   await api('custom',{list:list});config.custom=list;changeModel(id);toast('已保存并选用接入点');break;}
  case 'doRemove':{const list=config.custom.filter((_,i)=>i!==Number(v));await api('custom',{list:list});config.custom=list;if(!isMac()&&!options().some(m=>m.id===draft.model))setDraftModel((options()[0]||{}).id||'');show('custom');redraw();break;}
  case 'pick':
-  await api('draft',draft);
-  await api('pick',{limit:allowedRefs()-draft.refs.length});
+  if(referencesBusy)return;
+  setReferencesBusy(true);
+  try{
+   await api('draft',draft);
+   await api('pick',{limit:allowedRefs()-draft.refs.length});
+  }catch(error){setReferencesBusy(false);throw error;}
   break;
  case 'unref':draft.refs=draft.refs.filter((_,i)=>i!==Number(v));updateReferenceOrder();break;
  case 'doc':await api('open',{page:v});break;
@@ -882,15 +1080,24 @@ async function act(a,v,element){
   }
   const count=b.model===draft.model?b.count:1;
   const strokes=isMac(b)&&b.operation==='inpaint'?await api('macMask',{id:j.id}):[];
-  draft=Object.assign({},initial,b,{refs:b.refs.slice(),count,macOptions:opts,strokes});
+  rememberMacLoras();
+  const macLoraSelections=draft.macLoraSelections;
+  draft=Object.assign({},initial,b,{refs:b.refs.slice(),count,macOptions:{...opts,loras:opts.loras||[]},macLoraSelections,strokes});
   relabelDraft();navigate('create');redraw();prepareMacDimensions().catch(()=>{});
   toast('参数已填入，确认后可再次生成');break;
  }
  case 'save':await api('save',{file:v});toast('已保存到系统相册 · Pictures/映序');break;
- case 'share':await api('share',{file:v});break;
  case 'cancel':if(!await api('cancel',{id:v}))toast('任务已开始处理');await refresh();break;
  case 'recover':await api('recover',{id:v});await refresh();break;
  case 'delete':if(!await api('delete',{id:v}))throw new Error('任务仍在处理中或已删除');close();await refresh();break;
+ case 'deletePhoto':{
+  const item=photos().find(x=>x.p.file===v);
+  if(!item||!await api('deletePhoto',{id:item.j.id,file:v}))throw new Error('图片仍在保存或已删除');
+  item.p.deleted=true;
+  draw();
+  if(previousPhotoTask){show('task',previousPhotoTask);previousPhotoTask='';}else close();
+  await refresh();break;
+ }
  }
 }
 function toggleStack(stack){
@@ -983,6 +1190,8 @@ function insertPickedReference(ref){
 }
 window.setReducedMotion=function(value){document.documentElement.classList.toggle('reduce-motion',value);};
 document.addEventListener('pointerdown',event=>{
+ const picker=$('.photo-model-picker[open]');
+ if(picker&&!picker.contains(event.target))picker.open=false;
  if(event.target.closest('.ref-pick')&&pendingReference&&activeReferencePick(pendingReference.field))event.preventDefault();
  else if(pendingReference&&!event.target.closest('#prompt'))endReferencePick();
 });
@@ -1040,6 +1249,7 @@ document.addEventListener('input',event=>{
   else opts[key]=field.value;
   saveDraft();
  }else if(field.id==='maskBrush'&&maskEdit){maskEdit.diameter=Number(field.value);}
+ else if(field.id==='editPrompt'&&photoEdit){photoEdit.prompt=field.value;}
 });
 document.addEventListener('change',event=>{
  const t=event.target,a=t.dataset.change;
@@ -1052,12 +1262,12 @@ document.addEventListener('change',event=>{
  if(modal==='params'&&t.dataset.macLora){
   const cap=capability(macModel(),macOp()),item=cap?.loras.find(l=>l.id===t.dataset.macLora);
   if(!item)return;
-  const options=draft.macOptions??={};
-  options.loras=(options.loras||[]).filter(l=>l.id!==item.id);
+  const loras=currentMacLoras().filter(l=>l.id!==item.id);
   if(t.checked){
-   if(options.loras.length>=16){t.checked=false;toast('最多选择 16 个 LoRA');return;}
-   options.loras.push({id:item.id,strength:item.defaultStrength});
+   if(loras.length>=16){t.checked=false;toast('最多选择 16 个 LoRA');return;}
+   loras.push({id:item.id,strength:item.defaultStrength});
   }
+  (draft.macOptions??={}).loras=loras;
   const strength=t.closest('.mac-lora').querySelector('[data-mac-strength]');
   strength.disabled=!t.checked;strength.value=item.defaultStrength;
   saveDraft();

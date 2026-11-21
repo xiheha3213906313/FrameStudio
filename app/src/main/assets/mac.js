@@ -19,12 +19,26 @@ function macModel(id=draft.modelId,server=draft.serverId){
 function macOp(){return draft.operation==='inpaint'?'inpaint':draft.refs.length?'img2img':'txt2img';}
 function capability(model,op){return model?.operations.find(x=>x.id===op);}
 function macAvailable(op){return macModels().filter(m=>m.ready&&capability(m,op));}
+function currentMacLoras(){return draft.macOptions?.loras??draft.macLoraSelections?.[draft.model]??[];}
+function rememberMacLoras(){
+ if(isMac()&&draft.model&&Array.isArray(draft.macOptions?.loras))
+  (draft.macLoraSelections??={})[draft.model]=draft.macOptions.loras;
+}
 function selectMac(model){
  const server=config.mac.serverId;
- const same=isMac()&&server===draft.serverId&&model.id.toLowerCase()===draft.modelId?.toLowerCase();
- if(!same){draft.count=1;draft.macOptions={};draft.macEdge='';draft.macRatio='';}
- draft.source='mac';draft.serverId=server;draft.modelId=model.id;draft.model=macModelKey(server,model.id);
+ const key=macModelKey(server,model.id),same=isMac()&&key===draft.model;
+ if(!same){
+  const previous=isMac()&&draft.serverId===server?currentMacLoras():[];
+  rememberMacLoras();
+  draft.count=1;draft.macOptions={};draft.macEdge='';draft.macRatio='';
+  if(previous.length&&!draft.macLoraSelections?.[key]){
+   const compatible=previous.filter(item=>model.operations.some(op=>op.loras?.some(lora=>lora.id===item.id)));
+   if(compatible.length)draft.macOptions.loras=compatible.map(item=>({...item}));
+  }
+ }
+ draft.source='mac';draft.serverId=server;draft.modelId=model.id;draft.model=key;
  draft.name=model.name;draft.layers=false;
+ if(draft.operation==='inpaint'&&!capability(model,'inpaint'))clearDraftMask();
 }
 function macBody(){
  const operation=macOp(), data=promptSnapshot(draft.prompt,draft.promptRefs);
@@ -32,6 +46,9 @@ function macBody(){
  const macOptions={...(draft.macOptions||{})};
  delete macOptions.width;
  delete macOptions.height;
+ const loras=currentMacLoras().filter(item=>cap?.loras?.some(lora=>lora.id===item.id));
+ if(loras.length)macOptions.loras=loras;
+ else delete macOptions.loras;
  if(dims){[macOptions.width,macOptions.height]=dims;}
  return {source:'mac',serverId:draft.serverId,modelId:draft.modelId,model:draft.model,name:macModel()?.name||draft.name,
   operation,refs:draft.refs.slice(),macBase:draft.macBase,strokes:operation==='inpaint'?draft.strokes:undefined,
@@ -41,13 +58,13 @@ function macBody(){
 }
 
 // GenerationSize uses exact ratios when the grid fits and rounds each axis otherwise.
-function macResolutions(w,h,step,presets,preferSource,original=preferSource){
+function macResolutions(w,h,step,presets,preferSource,original=preferSource,max=2048){
  if(!(w>0&&h>0&&step>0))return [];
  let a=w,b=h;
  while(b){[a,b]=[b,a%b];}
- const ew=w/a*step,eh=h/a*step,ee=Math.max(ew,eh),edge=Math.max(w,h),max=2048;
+ const ew=w/a*step,eh=h/a*step,ee=Math.max(ew,eh),edge=Math.max(w,h);
  const result=new Map();
- function add(x,y){result.set(x+'x'+y,[x,y]);}
+ function add(x,y){if(Math.max(x,y)<=max)result.set(x+'x'+y,[x,y]);}
  for(const long of preferSource?[...presets,Math.min(max,edge)]:presets) {
   if(ee<=max/2){
    const factor=Math.max(1,Math.min(Math.floor(max/ee),Math.round(long/ee)));
@@ -67,7 +84,10 @@ function macSizeChoices(cap,op){
  if(!cap?.size)return [];
  const ratio=op==='inpaint'||op==='img2img'&&!draft.macRatio?'原图':draft.macRatio;
  const aspect=ratio==='原图'?macInputSize(op):(ratio||'1:1').split(':').map(Number);
- return aspect?macResolutions(...aspect,cap.size.step,cap.size.presets,op==='inpaint',ratio==='原图'): [];
+ if(!aspect)return [];
+ const {step,presets,maxEdge}=cap.size;
+ return macResolutions(...aspect,step,presets,op==='inpaint',ratio==='原图',op==='inpaint'?2048:maxEdge)
+  .filter(size=>Math.max(...size)<=maxEdge);
 }
 function macDraftSize(cap,op){
  if(!cap?.size)return null;
@@ -85,9 +105,30 @@ function macDraftSize(cap,op){
 async function prepareMacDimensions(){
  const ref=draft.refs[0];
  if(!isMac()||!ref||macSizes.has(ref))return;
+ await loadMacReferenceSize(ref);
+ if(modal==='params'&&draft.refs[0]===ref&&!$('#sheet').contains(document.activeElement))renderModal();
+}
+async function loadMacReferenceSize(ref){
+ if(macSizes.has(ref))return;
  const size=await api('macReferenceSize',{ref});
  macSizes.set(ref,[size.width,size.height]);
- if(modal==='params'&&draft.refs[0]===ref&&!$('#sheet').contains(document.activeElement))renderModal();
+}
+function matchMacResolution(target){
+ if(!target)return;
+ const op=macOp(),cap=capability(macModel(),op);
+ if(!cap?.size)return;
+ if(op!=='inpaint'){
+  draft.macRatio=target.ratio==='自定义'||!['原图',...macRatios].includes(target.ratio)?'自由':target.ratio;
+  if(draft.macRatio==='自由'){
+   const {step,maxEdge}=cap.size;
+   const factor=Math.min(Math.sqrt(target.area/(target.width*target.height)),maxEdge/Math.max(target.width,target.height));
+   draft.macWidth=supportedMacNumber(target.width*factor,step,maxEdge,step);
+   draft.macHeight=supportedMacNumber(target.height*factor,step,maxEdge,step);
+   return;
+  }
+ }
+ const size=nearestResolution(macSizeChoices(cap,op),target.area,([w,h])=>w*h);
+ if(size)draft.macEdge=size.join('x');
 }
 
 function macModelSheet(){
@@ -279,7 +320,7 @@ function storeMacDraftNumber(field,writeBack=false){
   draft[field.dataset.macDimension==='width'?'macWidth':'macHeight']=value??'';
   $('#macSizeHint').textContent=macSizeHint();
  }else if(field.dataset.macStrength){
-  const lora=draft.macOptions?.loras?.find(x=>x.id===field.dataset.macStrength);
+  const lora=currentMacLoras().find(x=>x.id===field.dataset.macStrength);
   if(lora&&value!=null)lora.strength=value;
  }else if(field.dataset.macOption){
   const options=draft.macOptions??={},key=field.dataset.macOption;
@@ -303,7 +344,7 @@ function macParamSheet(){
  const op=macOp(),model=macModel(),cap=capability(model,op);
  let top=entry('操作',macOperations[op]);
  if(op==='inpaint')top+=entry('正在修复',draft.refs.includes(draft.macBase)?'参考图 '+(draft.refs.indexOf(draft.macBase)+1):'底图已移除')+
-  '<div class="buttons">'+button('maskOpen','调整涂抹','secondary',draft.macBase||'')+
+  '<div class="buttons">'+(model?.ready&&cap&&draft.refs.includes(draft.macBase)?button('maskOpen','调整涂抹','secondary',draft.macBase):'')+
   button('maskExit','退出局部编辑','secondary')+'</div>';
  if(!cap||!model.ready)return top+'<p class="notice">当前 Mac 模型未就绪或不支持此操作。</p>';
  const size=cap.size, selected=draft.macOptions||{};
@@ -335,7 +376,7 @@ function macParamSheet(){
  if(cap.imageStrength)advanced+=macNumber('imageStrength','重绘强度',cap.imageStrength,selected.imageStrength);
  if(cap.loras?.length)advanced+='<div class="group"><div class="mac-lora mac-lora-head">'+
   '<span class="fieldtitle">LoRA</span><span class="fieldtitle">强度</span></div>'+cap.loras.map(lora=>{
-   const used=selected.loras?.find(x=>x.id===lora.id);
+   const used=currentMacLoras().find(x=>x.id===lora.id);
    return '<div class="mac-lora"><label title="'+e(lora.name)+'"><input type="checkbox" data-mac-lora="'+e(lora.id)+'" '+
     (used?'checked':'')+'><span>'+e(lora.name)+'</span></label><input type="number" min="0" max="2" step="any" '+
     'data-mac-strength="'+e(lora.id)+'" data-default-strength="'+e(lora.defaultStrength)+'" aria-label="'+e(lora.name)+' 强度" '+
@@ -354,18 +395,15 @@ function macSizeHint(){
  const automatic=choices.reduce((best,x)=>!best||Math.abs(Math.max(...x)-target)<Math.abs(Math.max(...best)-target)?x:best,null);
  return automatic?'自动 · '+automatic.join(' × ')+' 像素':op==='inpaint'?'由 Mac 根据原图选择尺寸。':'自动选择尺寸';
 }
-function macPhotoOptions(kind,id){
- return '<div class="buttons">'+button('maskOpen','局部编辑','secondary',id,'data-kind="'+kind+'"')+
-  button('upscaleOpen','高清放大','secondary',id,'data-kind="'+kind+'"')+'</div>';
+function newMaskEdit(source,strokes=[]){
+ return {source,strokes:strokes.map(s=>({...s,points:s.points.slice()})),erases:false,pan:false,diameter:0.08};
 }
-async function openMacImage(mode,kind,id){
- const operation=mode==='mask'?'inpaint':'upscale';
+async function openMacImage(operation,kind,id){
  if(!config.mac?.endpoint){show('macConnect');return;}
  if(!macAvailable(operation).length)throw new Error('Mac 上没有就绪的'+macOperations[operation]+'模型，请检查并刷新目录。');
  const source=await api('macImage',{[kind]:id});
- if(mode==='mask'){
-  maskEdit={source,strokes:source.ref===draft.macBase?(draft.strokes||[]).map(s=>({...s,points:s.points.slice()})):[],
-   erases:false,pan:false,diameter:0.08};
+ if(operation==='inpaint'){
+  maskEdit=newMaskEdit(source,source.ref===draft.macBase?draft.strokes:[]);
   show('mask');
  }else{upscaleSource=source;show('upscale');}
 }
@@ -423,12 +461,13 @@ function macTaskState(j){
  default:return stateNames[j.state];
  }
 }
-function macParameterDetails(b,r){
+function macParameterDetails(b,r,showSize=true){
  const o=r?.remote?.options||b.macOptions||{};
  const cap=capability(macModel(b.modelId,b.serverId),b.operation);
  const lora=o.loras?.map(x=>(b.macLoraNames?.[x.id]||cap?.loras?.find(l=>l.id===x.id)?.name||x.id)+' × '+x.strength).join('，');
  const output=r?.remote?.output;
- const params=[['尺寸',o.width&&o.height?o.width+' × '+o.height:output?output.width+' × '+output.height:undefined],['步数',o.steps],['实际种子',o.seed],
+ const size=o.width&&o.height?o.width+' × '+o.height:output?output.width+' × '+output.height:undefined;
+ const params=[['尺寸',showSize?size:undefined],['步数',o.steps],['实际种子',o.seed],
   ['CFG',o.guidance??b.macFixedCfg??cap?.fixedGuidance],['采样器',o.sampler??b.macSamplerDefault],['负面提示词',o.negativePrompt],
   ['低内存',o.lowRAM==null?undefined:o.lowRAM?'开启':'关闭'],['重绘强度',o.imageStrength],['LoRA',lora],
   ['倍率',o.scale],['目标短边',o.shortEdge],['柔化',o.softness]];
@@ -440,19 +479,53 @@ if(typeof module!=='undefined')module.exports={macResolutions,supportedMacNumber
 
 function maskSheet(){
  const source=maskEdit.source;
- return '<canvas id="maskCanvas" class="mask-canvas" aria-label="局部编辑底图，拖动涂抹，两指缩放"></canvas>'+
+ const tool=(action,glyph,label,value,extra='')=>button(action,icon(glyph),'image-overlay-action mask-tool',value,
+  'aria-label="'+label+'" title="'+label+'" '+extra);
+ const mode=(glyph,label,value,selected)=>tool('maskTool',glyph,label,value,'aria-pressed="'+selected+'"');
+ return '<div class="mask-frame" style="--mask-aspect:'+Number(source.width)+' / '+Number(source.height)+'">'+
+  '<canvas id="maskCanvas" class="mask-canvas" aria-label="局部编辑底图，拖动涂抹，两指缩放"></canvas>'+
+  '<div class="mask-tools" role="group" aria-label="涂抹工具">'+
+  mode('brush','画笔','paint',!maskEdit.erases&&!maskEdit.pan)+mode('erase','擦除','erase',maskEdit.erases)+mode('move','拖动','pan',maskEdit.pan)+
+  tool('maskUndo','undo','撤销')+tool('maskClear','trash','清空')+'</div></div>'+
   '<p class="sub">'+e(source.width+' × '+source.height)+' · 一指涂抹，双指缩放拖动</p>'+
-  '<div class="buttons mask-tools">'+button('maskTool','画笔','choice selected','paint')+button('maskTool','擦除','choice','erase')+
-  button('maskTool','拖动','choice','pan')+button('maskUndo','撤销','secondary')+button('maskClear','清空','secondary')+'</div>'+
-  '<label class="mask-range"><span>笔刷大小</span><input id="maskBrush" type="range" min="0.005" max="0.4" step="0.005" value="'+maskEdit.diameter+'"></label>'+
-  '<div class="buttons">'+button('maskZoom','−','secondary',0.75,'aria-label="缩小"')+
-  button('maskZoom','+','secondary',1.33,'aria-label="放大"')+button('maskZoom','适合画布','secondary',0)+'</div>';
+  '<label class="mask-range"><span>笔刷大小</span><input id="maskBrush" type="range" min="0.005" max="0.4" step="0.005" value="'+maskEdit.diameter+'"></label>';
+}
+function paintMask(ink,strokes,{x,y,w,h}){
+ ink.save();
+ ink.beginPath();ink.rect(x,y,w,h);ink.clip();
+ ink.lineJoin='round';ink.lineCap='round';
+ ink.fillStyle=ink.strokeStyle='#b0442b';
+ for(const path of strokes){
+  const first=path.points[0],d=path.diameter*Math.min(w,h);
+  ink.globalCompositeOperation=path.erases?'destination-out':'source-over';
+  ink.lineWidth=d;
+  ink.beginPath();
+  ink.moveTo(x+first.x*w,y+first.y*h);
+  for(const point of path.points.slice(1))ink.lineTo(x+point.x*w,y+point.y*h);
+  if(path.points.length>1)ink.stroke();
+  else {ink.arc(x+first.x*w,y+first.y*h,d/2,0,Math.PI*2);ink.fill();}
+ }
+ ink.restore();
+}
+function hasMask(edit){
+ const {strokes,source}=edit;
+ if(!strokes.some(path=>!path.erases))return false;
+ if(!strokes.some(path=>path.erases))return true;
+ const sample=document.createElement('canvas'),scale=256/Math.min(source.width,source.height);
+ sample.width=Math.round(source.width*scale);sample.height=Math.round(source.height*scale);
+ const ink=sample.getContext('2d');
+ paintMask(ink,strokes,{x:0,y:0,w:sample.width,h:sample.height});
+ const pixels=ink.getImageData(0,0,sample.width,sample.height).data;
+ for(let i=3;i<pixels.length;i+=4)if(pixels[i]>127)return true;
+ return false;
 }
 function setupMask(canvas){
  if(!canvas||!maskEdit)return;
  const edit=maskEdit,source=edit.source,picture=new Image(),layer=document.createElement('canvas');
  const ctx=canvas.getContext('2d'),ink=layer.getContext('2d'),fingers=new Map();
+ const toolbar=canvas.parentElement.querySelector('.mask-tools');
  let scale=1,dx=0,dy=0,stroke=null,mode='',scheduled=0,frame;
+ let layoutWidth=0,layoutHeight=0;
  let total=edit.strokes.reduce((sum,s)=>sum+s.points.length,0);
  function render(){
   scheduled=0;
@@ -463,8 +536,14 @@ function setupMask(canvas){
    canvas.width=Math.round(width*pixel);canvas.height=Math.round(height*pixel);
    layer.width=canvas.width;layer.height=canvas.height;
   }
-  const fit=Math.min(width/source.width,height/source.height)*scale;
-  const w=source.width*fit,h=source.height*fit;
+  const fit=Math.min(width/source.width,height/source.height);
+  if(width!==layoutWidth||height!==layoutHeight){
+   layoutWidth=width;layoutHeight=height;
+   const top=(height-source.height*fit)/2,right=(width-source.width*fit)/2;
+   toolbar.style.top=Math.min(top+8,Math.max(8,height-toolbar.offsetHeight-8))+'px';
+   toolbar.style.right=Math.min(right+8,Math.max(8,width-toolbar.offsetWidth-8))+'px';
+  }
+  const w=source.width*fit*scale,h=source.height*fit*scale;
   dx=Math.max(-Math.max(0,(w-width)/2),Math.min(Math.max(0,(w-width)/2),dx));
   dy=Math.max(-Math.max(0,(h-height)/2),Math.min(Math.max(0,(h-height)/2),dy));
   const x=(width-w)/2+dx,y=(height-h)/2+dy;
@@ -474,22 +553,10 @@ function setupMask(canvas){
   ctx.clearRect(0,0,width,height);ink.clearRect(0,0,width,height);
   if(!picture.naturalWidth)return;
   ctx.drawImage(picture,x,y,w,h);
-  ink.save();
-  ink.beginPath();ink.rect(x,y,w,h);ink.clip();
-  ink.lineJoin='round';ink.lineCap='round';
-  ink.fillStyle=ink.strokeStyle='rgba(176,68,43,.55)';
-  for(const path of stroke?[...edit.strokes,stroke]:edit.strokes){
-   const first=path.points[0],d=path.diameter*Math.min(w,h);
-   ink.globalCompositeOperation=path.erases?'destination-out':'source-over';
-   ink.lineWidth=d;
-   ink.beginPath();
-   ink.moveTo(x+first.x*w,y+first.y*h);
-   for(const point of path.points.slice(1))ink.lineTo(x+point.x*w,y+point.y*h);
-   if(path.points.length>1)ink.stroke();
-   else {ink.arc(x+first.x*w,y+first.y*h,d/2,0,Math.PI*2);ink.fill();}
-  }
-  ink.restore();
+  paintMask(ink,stroke?[...edit.strokes,stroke]:edit.strokes,frame);
+  ctx.globalAlpha=.55;
   ctx.drawImage(layer,0,0,width,height);
+  ctx.globalAlpha=1;
  }
  function schedule(){if(!scheduled)scheduled=requestAnimationFrame(render);}
  function point(event){
@@ -548,10 +615,6 @@ function setupMask(canvas){
  picture.onload=render;
  picture.src='refs/'+source.preview;
  maskCanvas={
-  zoom(factor){
-   if(!factor){scale=1;dx=0;dy=0;render();}
-   else zoom(scale*factor,{x:canvas.clientWidth/2,y:canvas.clientHeight/2});
-  },
   remove(clear){
    if(clear)edit.strokes=[];
    else edit.strokes.pop();
@@ -562,15 +625,16 @@ function setupMask(canvas){
  maskCanvas.observer.observe(canvas);
  render();
 }
-function applyMask(){
- if(!maskEdit?.strokes.some(s=>!s.erases))throw new Error('请先涂出要修复的区域。');
- const model=macAvailable('inpaint').find(m=>m.id===macModel()?.id)||macAvailable('inpaint')[0];
- if(!model)throw new Error('Mac 上没有就绪的局部编辑模型。');
- const source=maskEdit.source,strokes=maskEdit.strokes;
- selectMac(model);
- if(!draft.refs.includes(source.ref))draft.refs=draft.refs.length<14?[...draft.refs,source.ref]:[...draft.refs.slice(0,13),source.ref];
+function setDraftMask({source,strokes}){
  draft.operation='inpaint';draft.macBase=source.ref;draft.macBaseSize=[source.width,source.height];draft.strokes=strokes;
  draft.macRatio='';draft.macEdge='';
+}
+function clearDraftMask(){
+ draft.operation=undefined;draft.strokes=[];draft.macBase=undefined;draft.macBaseSize=undefined;draft.macEdge='';
+}
+function applyMask(){
+ if(!maskEdit||!hasMask(maskEdit))throw new Error('请涂出要修复的区域，或退出局部编辑。');
+ setDraftMask(maskEdit);
  navigate('create');redraw();
  toast('局部编辑底图已选定，请填写修改提示词。');
 }

@@ -18,6 +18,7 @@ public class Studio extends Application {
     SharedPreferences prefs;
     MacConnection mac;
     File images, refs;
+    volatile boolean importingReferences;
     static final String BASE = "https://ark.cn-beijing.volces.com/api/v3";
     @Override public void onCreate() {
         super.onCreate();
@@ -122,6 +123,34 @@ class Store extends SQLiteOpenHelper {
         ContentValues row = new ContentValues(); row.put("state", state); row.put("result", result.toString());
         getWritableDatabase().update("jobs", row, "id=?", new String[]{id});
         revision.incrementAndGet();
+    }
+    boolean deletePhoto(String id, String name) throws JSONException {
+        SQLiteDatabase db=getWritableDatabase();
+        db.beginTransaction();
+        boolean changed=false;
+        try {
+            JSONObject job=find(id);
+            if(job==null)return false;
+            JSONObject result=job.getJSONObject("result");
+            JSONArray images=result.optJSONArray("images");
+            for(int i=0;images!=null && i<images.length();i++) {
+                JSONObject image=images.getJSONObject(i);
+                if(!name.equals(image.optString("file")) || !image.optBoolean("ready"))continue;
+                if(image.optBoolean("deleted"))return true;
+                // Keep the output size for the original task's usage estimate.
+                image.put("deleted",true);
+                ContentValues row=new ContentValues();
+                row.put("result",result.toString());
+                if(db.update("jobs",row,"id=? AND state NOT IN "+ALL_ACTIVE,new String[]{id})!=1)return false;
+                db.setTransactionSuccessful();
+                changed=true;
+                return true;
+            }
+            return false;
+        } finally {
+            db.endTransaction();
+            if(changed)revision.incrementAndGet();
+        }
     }
     boolean transition(String id, String from, String to) {
         ContentValues row = new ContentValues(); row.put("state", to);

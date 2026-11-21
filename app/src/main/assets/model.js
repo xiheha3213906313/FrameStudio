@@ -66,6 +66,15 @@ function requestSize(profile,level,ratio,width=1,height=1) {
  return SIZES[level][slot]||'';
 }
 function pixels(size){const parts=String(size||'').split(/[x×]/).map(Number);return parts.length===2 && parts.every(n=>n>0)?parts[0]*parts[1]:0;}
+function resolutionPixels(size){return pixels(SIZES[size]?.[0]||size);}
+function nearestResolution(choices,target,area){
+ let result,distance=Infinity;
+ for(const choice of choices){
+  const pixels=area(choice),delta=Math.abs(pixels-target);
+  if(pixels>0&&delta<distance){result=choice;distance=delta;}
+ }
+ return result;
+}
 function unit(rule,size,layers){
  if(!rule || rule.low==null)return null;
  const area=pixels(size);

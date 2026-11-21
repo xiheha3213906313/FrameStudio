@@ -29,6 +29,7 @@ public class MainActivity extends Activity {
     private final ExecutorService io=Executors.newSingleThreadExecutor(), network=Executors.newSingleThreadExecutor();
     private final ExecutorService macNetwork=Executors.newSingleThreadExecutor();
     private String picker="";
+    private volatile boolean referencePickerOpen;
     private boolean ready, showTasks, watchingMacNetwork;
     private boolean macReachable;
     private MacDiscovery macDiscovery;
@@ -54,7 +55,10 @@ public class MainActivity extends Activity {
         decor.setSystemUiVisibility(decor.getSystemUiVisibility() | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
             | View.SYSTEM_UI_FLAG_LAYOUT_STABLE | View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR);
         showTasks=getIntent().getBooleanExtra("tasks",false);
-        if(state!=null) picker=state.getString("picker","");
+        if(state!=null) {
+            picker=state.getString("picker","");
+            referencePickerOpen=state.getBoolean("referencePickerOpen");
+        }
         view=new WebView(this);view.setBackgroundColor(0xfff8f7f3);
         WebSettings settings=view.getSettings();settings.setJavaScriptEnabled(true); settings.setAllowFileAccess(false);
         settings.setSupportZoom(false);
@@ -117,7 +121,11 @@ public class MainActivity extends Activity {
         }
     }
     private void collect(Set<String>s,JSONArray arr){if(arr!=null)for(int i=0;i<arr.length();i++)s.add(arr.optString(i));}
-    @Override protected void onSaveInstanceState(Bundle state){super.onSaveInstanceState(state);state.putString("picker",picker);}
+    @Override protected void onSaveInstanceState(Bundle state){
+        super.onSaveInstanceState(state);
+        state.putString("picker",picker);
+        state.putBoolean("referencePickerOpen",referencePickerOpen);
+    }
     @Override public void onNewIntent(Intent i){super.onNewIntent(i);if(i.getBooleanExtra("tasks",false))js("window.navigate('tasks')");}
     @Override public void onBackPressed(){
         view.evaluateJavascript("window.studioBack ? window.studioBack() : false",v->{if(!"true".equals(v))super.onBackPressed();});
@@ -312,7 +320,7 @@ public class MainActivity extends Activity {
                 return marked;
             }
             case "editPhoto": {
-                File work=fileFrom(d);
+                File work=d.has("ref")?MacJobs.input(app,d.getString("ref")):fileFrom(d);
                 String ref=importRef(ImageDecoder.createSource(work));
                 try(InputStream in=new FileInputStream(work)) {
                     MacImages.snapshot(in,new File(app.refs,ref+".original"));
@@ -334,7 +342,7 @@ public class MainActivity extends Activity {
                     for(int k=0;imgs!=null && k<imgs.length();k++) {
                         JSONObject image=imgs.getJSONObject(k);
                         image.remove("url");
-                        if(image.optBoolean("ready"))image.put("seen",new File(new File(app.getFilesDir(),"viewed"),image.optString("file")).isFile());
+                        if(image.optBoolean("ready")&&!image.optBoolean("deleted"))image.put("seen",new File(new File(app.getFilesDir(),"viewed"),image.optString("file")).isFile());
                     }
                 }
                 return new JSONObject().put("revision",rev).put("rows",rows);
@@ -390,6 +398,12 @@ public class MainActivity extends Activity {
             }
             case "delete": return deleteJobs(new JSONArray().put(d.getString("id")))==1;
             case "deleteMany": return deleteJobs(d.getJSONArray("ids"));
+            case "deletePhoto": {
+                String id=d.getString("id"), name=d.getString("file");
+                if(!Studio.safe(id)||!Studio.safe(name)||!app.db.deletePhoto(id,name))return false;
+                deleteImageFiles(name);
+                return true;
+            }
             case "restoreLink": {
                 String id=d.getString("id"),link=d.getString("link").trim();
                 JSONObject job=app.db.find(id);
@@ -411,6 +425,7 @@ public class MainActivity extends Activity {
                 runOnUiThread(()->openPicker(42,id,false));return true;
             }
             case "pendingRefs": {
+                if(referencePickerOpen||app.importingReferences)return new JSONObject().put("busy",true);
                 String pending=app.prefs.getString("pendingRefs","[]");
                 String removed=app.prefs.getString("pendingRemoved","[]");
                 String order=app.prefs.getString("pendingRefOrder","[]");
@@ -435,16 +450,18 @@ public class MainActivity extends Activity {
                     .putExtra(AlbumActivity.UPSCALE_AVAILABLE,app.mac.status().has("endpoint"))
                     .putStringArrayListExtra(AlbumActivity.EXISTING,sources)
                     .putStringArrayListExtra(AlbumActivity.FILES,files);
-                runOnUiThread(()->startActivityForResult(pick,41));
+                runOnUiThread(()->{
+                    referencePickerOpen=true;
+                    try {startActivityForResult(pick,41);}
+                    catch(RuntimeException error){
+                        referencePickerOpen=false;
+                        notifyUI(ArkError.explain(error));
+                        referencesFinished(0);
+                    }
+                });
                 return true;
             }
             case "save": return export(fileFrom(d));
-            case "share": {
-                File f=fileFrom(d);Uri uri=new Uri.Builder().scheme("content").authority("studio.yingxu.frame.pictures").appendPath(f.getName()).build();
-                Intent send=new Intent(Intent.ACTION_SEND).setType(PictureProvider.mime(f)).putExtra(Intent.EXTRA_STREAM,uri)
-                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-                send.setClipData(ClipData.newRawUri("图片",uri));runOnUiThread(()->{try{startActivity(Intent.createChooser(send,"分享原图"));}catch(ActivityNotFoundException ex){notifyUI("设备没有可用的分享应用");}});return true;
-            }
             case "open": {
                 String page=d.getString("page");
                 String url;
@@ -477,14 +494,16 @@ public class MainActivity extends Activity {
             JSONArray images=job.optJSONObject("result").optJSONArray("images");
             for(int k=0;images!=null && k<images.length();k++) {
                 String name=images.optJSONObject(k).optString("file");
-                if(!Studio.safe(name))continue;
-                new File(app.images,name).delete();
-                new File(app.images,name+".thumb").delete();
-                new File(new File(app.getFilesDir(),"viewed"),name).delete();
+                if(Studio.safe(name))deleteImageFiles(name);
             }
         }
         if(count>0){app.db.revision.incrementAndGet();pruneRefs();}
         return count;
+    }
+    private void deleteImageFiles(String name) {
+        new File(app.images,name).delete();
+        new File(app.images,name+".thumb").delete();
+        new File(new File(app.getFilesDir(),"viewed"),name).delete();
     }
     private JSONArray referenceKeys(JSONArray refs) {
         JSONArray keys=new JSONArray();
@@ -564,7 +583,14 @@ public class MainActivity extends Activity {
     }
     @Override protected void onActivityResult(int request,int result,Intent data) {
         super.onActivityResult(request,result,data);
-        if(result!=RESULT_OK || data==null)return;
+        boolean picked=result==RESULT_OK&&data!=null;
+        boolean upscale=picked&&(request==43||request==41&&data.getBooleanExtra(AlbumActivity.UPSCALE,false))&&data.getData()!=null;
+        if(request==41){
+            if(picked&&!upscale)app.importingReferences=true;
+            referencePickerOpen=false;
+            if(!picked||upscale)referencesFinished(0);
+        }
+        if(!picked)return;
         if(request==42 && data.getData()!=null) {
             String id=picker;picker="";
             io.execute(()->{
@@ -573,7 +599,7 @@ public class MainActivity extends Activity {
             });
             return;
         }
-        if((request==43 || request==41 && data.getBooleanExtra(AlbumActivity.UPSCALE,false)) && data.getData()!=null) {
+        if(upscale) {
             picker="";
             Uri uri=data.getData();
             io.execute(()->{
@@ -588,43 +614,52 @@ public class MainActivity extends Activity {
             return;
         }
         if(request!=41)return;
-        picker="";List<Uri> uris=new ArrayList<>();ClipData clip=data.getClipData();
+        picker="";
+        io.execute(()->{
+            int failed=0;
+            try {failed=importReferences(data);}
+            catch(Exception error){notifyUI(ArkError.explain(error));}
+            finally {
+                app.importingReferences=false;
+                referencesFinished(failed);
+            }
+        });
+    }
+    private void referencesFinished(int failed){
+        js("window.receiveReferences && window.receiveReferences("+failed+")");
+    }
+    private int importReferences(Intent data) throws JSONException {
+        List<Uri> uris=new ArrayList<>();ClipData clip=data.getClipData();
         if(clip!=null)for(int i=0;i<Math.min(14,clip.getItemCount());i++)uris.add(clip.getItemAt(i).getUri());
         else if(data.getData()!=null)uris.add(data.getData());
-        io.execute(()->{
-            JSONArray names=new JSONArray(); int failed=0;
-            Map<String,String> imported=new HashMap<>();
-            for(Uri uri:uris) {
-                try{
-                    String name=importRef(ImageDecoder.createSource(getContentResolver(),uri));
-                    names.put(name);
-                    imported.put(uri.toString(),name);
-                    app.prefs.edit().putString("source."+name,uri.toString()).apply();
-                    try { cacheOriginal(name,uri); } catch(Exception ignored) {}
-                }
-                catch(Exception e){failed++;}
-                finally{
-                    if(PictureProvider.isCapture(uri))PictureProvider.captureFile(this,uri).delete();
-                }
+        int failed=0;
+        Map<String,String> imported=new HashMap<>();
+        JSONArray pending=new JSONArray(app.prefs.getString("pendingRefs","[]"));
+        for(Uri uri:uris) {
+            try{
+                String name=importRef(ImageDecoder.createSource(getContentResolver(),uri));
+                pending.put(name);
+                imported.put(uri.toString(),name);
+                app.prefs.edit().putString("source."+name,uri.toString()).apply();
+                try {cacheOriginal(name,uri);} catch(Exception ignored) {}
             }
-            try {
-                JSONArray pending=new JSONArray(app.prefs.getString("pendingRefs","[]"));
-                for(int k=0;k<names.length();k++)pending.put(names.get(k));
-                JSONArray removed=new JSONArray(app.prefs.getString("pendingRemoved","[]"));
-                ArrayList<String> changes=data.getStringArrayListExtra(AlbumActivity.REMOVED);
-                if(changes!=null)for(String name:changes)removed.put(name);
-                JSONArray order=new JSONArray();
-                ArrayList<String> selected=data.getStringArrayListExtra(AlbumActivity.ORDER);
-                if(selected!=null)for(String item:selected){
-                    String name=Studio.safe(item)?item:imported.get(item);
-                    if(name!=null)order.put(name);
-                }
-                app.prefs.edit().putString("pendingRefs",pending.toString()).putString("pendingRemoved",removed.toString())
-                    .putString("pendingRefOrder",order.toString()).commit();
-            } catch(JSONException ignored) {}
-            final int failures=failed;
-            js("window.receiveReferences && window.receiveReferences("+failures+")");
-        });
+            catch(Exception e){failed++;}
+            finally{
+                if(PictureProvider.isCapture(uri))PictureProvider.captureFile(this,uri).delete();
+            }
+        }
+        JSONArray removed=new JSONArray(app.prefs.getString("pendingRemoved","[]"));
+        ArrayList<String> changes=data.getStringArrayListExtra(AlbumActivity.REMOVED);
+        if(changes!=null)for(String name:changes)removed.put(name);
+        JSONArray order=new JSONArray();
+        ArrayList<String> selected=data.getStringArrayListExtra(AlbumActivity.ORDER);
+        if(selected!=null)for(String item:selected){
+            String name=Studio.safe(item)?item:imported.get(item);
+            if(name!=null)order.put(name);
+        }
+        app.prefs.edit().putString("pendingRefs",pending.toString()).putString("pendingRemoved",removed.toString())
+            .putString("pendingRefOrder",order.toString()).commit();
+        return failed;
     }
     private void cacheOriginal(String ref, Uri uri) throws IOException {
         try(InputStream input=getContentResolver().openInputStream(uri)) {

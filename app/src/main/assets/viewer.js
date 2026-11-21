@@ -1,12 +1,12 @@
 'use strict';
 
-function imageViewer(src,description,neighbors) {
+function imageViewer(src,description,neighbors,actions='') {
  const previous=neighbors&&neighbors.previous;
  const next=neighbors&&neighbors.next;
  const slide=(file,side)=>file?'<img class="viewer-neighbor '+side+'" src="images/'+e(file)+'.thumb" alt="" aria-hidden="true" draggable="false">':'';
- return '<div class="viewer" tabindex="0" aria-label="'+e(description)+'，支持双指缩放和拖动">'+
+ return '<div class="viewer-frame"><div class="viewer'+(neighbors?' viewer-near-fit':'')+'" tabindex="0" aria-label="'+e(description)+'，支持双指缩放和拖动">'+
   '<img class="viewer-current" src="'+e(src)+'" alt="'+e(description)+'" draggable="false">'+
-  slide(previous,'previous')+slide(next,'next')+'</div>';
+  slide(previous,'previous')+slide(next,'next')+'</div>'+actions+'</div>';
 }
 
 function setupViewer(viewport,onSwipe) {
@@ -21,6 +21,7 @@ function setupViewer(viewport,onSwipe) {
   '1':viewport.querySelector('.viewer-neighbor.next')
  };
  const points=new Map();
+ const nearFit=()=>onSwipe&&scale<=1.15;
  let scale=1,x=0,y=0,swipe=null,settling=false,travel=0;
  function render() {
   const width=viewport.clientWidth,height=viewport.clientHeight;
@@ -28,6 +29,7 @@ function setupViewer(viewport,onSwipe) {
   const maxX=Math.max(0,((image.naturalWidth||width)*fit*scale-width)/2);
   const maxY=Math.max(0,((image.naturalHeight||height)*fit*scale-height)/2);
   x=Math.max(-maxX,Math.min(maxX,x));y=Math.max(-maxY,Math.min(maxY,y));
+  viewport.classList.toggle('viewer-near-fit',!!nearFit());
   image.style.transform='translate('+(x+travel)+'px,'+y+'px) scale('+scale+')';
   for(const direction of [-1,1]) {
    const neighbor=neighbors[direction];
@@ -61,7 +63,7 @@ function setupViewer(viewport,onSwipe) {
  }
  viewport.addEventListener('keydown',event=>{
   if(settling)return;
-  if(onSwipe&&scale===1&&['ArrowLeft','ArrowRight'].includes(event.key)){
+  if(nearFit()&&['ArrowLeft','ArrowRight'].includes(event.key)){
    event.preventDefault();
    const direction=event.key==='ArrowLeft'?-1:1;
    if(neighbors[direction])settle(direction);
@@ -76,7 +78,7 @@ function setupViewer(viewport,onSwipe) {
  });
  viewport.addEventListener('pointerdown',event=>{
   if(settling||points.size>=2)return;
-  if(onSwipe&&scale===1&&!points.size)swipe={id:event.pointerId,x:event.clientX,y:event.clientY,dragging:false};
+  if(nearFit()&&!points.size)swipe={id:event.pointerId,x:event.clientX,y:event.clientY,axis:''};
   else {
    swipe=null;
    travel=0;
@@ -98,8 +100,9 @@ function setupViewer(viewport,onSwipe) {
    if(before>1)zoom(scale*after/before,...offset(pivot.x,pivot.y));
   }else if(swipe&&swipe.id===event.pointerId){
    const dx=next.x-swipe.x,dy=next.y-swipe.y;
-   if(!swipe.dragging&&Math.abs(dx)<Math.max(8,Math.abs(dy)*1.15))return;
-   swipe.dragging=true;
+   if(!swipe.axis&&Math.max(Math.abs(dx),Math.abs(dy))>=8)
+    swipe.axis=Math.abs(dx)>Math.abs(dy)?'x':'y';
+   if(swipe.axis!=='x')return;
    travel=neighbors[dx<0?1:-1]?dx:dx*.23;
    render();
   }else{
@@ -111,9 +114,9 @@ function setupViewer(viewport,onSwipe) {
   if(!swipe||swipe.id!==event.pointerId)return;
   const dx=event.clientX-swipe.x;
   const direction=dx<0?1:-1;
-  const dragged=swipe.dragging;
+  const dragged=swipe.axis==='x';
   swipe=null;
-  if(dragged)settle(scale===1&&neighbors[direction]&&Math.abs(dx)>=48?direction:0);
+  if(dragged)settle(nearFit()&&neighbors[direction]&&Math.abs(dx)>=48?direction:0);
  });
  for(const type of ['pointercancel','lostpointercapture'])
   viewport.addEventListener(type,event=>{
