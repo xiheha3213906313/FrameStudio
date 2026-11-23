@@ -30,7 +30,6 @@ img{-webkit-user-drag:none}
  -webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);text-shadow:0 1px 2px #242821,0 0 3px #242821
 }
 .image-overlay-action .ic{filter:drop-shadow(0 0 1px #242821) drop-shadow(0 1px 1px #242821)}
-.viewer-actions{position:absolute;bottom:8px;right:8px;display:flex;gap:4px;max-width:calc(100% - 16px);flex-wrap:wrap;justify-content:flex-end}
 .viewer-action{display:inline-flex;align-items:center;justify-content:center;gap:4px;min-height:32px;padding:2px 8px;font-size:.85rem;white-space:nowrap}
 .viewer-action .ic{width:16px;height:16px}
 .preview-actions{position:static;display:grid;grid-auto-flow:column;grid-auto-columns:minmax(0,1fr);gap:6px;max-width:none;margin:8px 0 0}

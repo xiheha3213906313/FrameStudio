@@ -4,7 +4,7 @@ const macOperations={txt2img:'文生图',img2img:'参考图编辑',inpaint:'局�
 const macRatios=['1:1','4:3','3:4','3:2','2:3','5:4','4:5','16:9','9:16','21:9','9:21'];
 const macModelKey=(server,id)=>'mac:'+server.toLowerCase()+':'+id.toLowerCase();
 let macBusy=false, macNotice='', macError='', maskEdit=null, upscaleSource=null;
-let macRefreshTimer, macAutoSyncing=false, macRefreshFailures=0, macRefreshPending=false;
+let macRefreshTimer, macAutoSyncing=false, macRefreshFailures=0, macRefreshPending=false, macStartupChecking=false;
 let macServices=[], macPairTarget=null, macManualAddress='', macPairAttempt=null, macPairLocked=false;
 let maskCanvas=null;
 const macSizes=new Map();
@@ -20,6 +20,11 @@ function macOp(){return draft.operation==='inpaint'?'inpaint':draft.refs.length?
 function capability(model,op){return model?.operations.find(x=>x.id===op);}
 function macAvailable(op){return macModels().filter(m=>m.ready&&capability(m,op));}
 function currentMacLoras(){return draft.macOptions?.loras??draft.macLoraSelections?.[draft.model]??[];}
+function macLoraStrength(id){return currentMacLoras().find(lora=>lora.id===id)?.strength??draft.macLoraStrengths?.[draft.model]?.[id]??1;}
+function rememberMacLoraStrength(id,strength){
+ const models=draft.macLoraStrengths??={};
+ (models[draft.model]??={})[id]=strength;
+}
 function rememberMacLoras(){
  if(isMac()&&draft.model&&Array.isArray(draft.macOptions?.loras))
   (draft.macLoraSelections??={})[draft.model]=draft.macOptions.loras;
@@ -225,6 +230,7 @@ async function refreshMacAutomatically(){
   }
  }finally{
   macAutoSyncing=false;
+  if(macStartupChecking){macStartupChecking=false;updateGenerateButton();}
   const pending=macRefreshPending;
   macRefreshPending=false;
   scheduleMacRefresh(pending?0:undefined);
@@ -320,8 +326,12 @@ function storeMacDraftNumber(field,writeBack=false){
   draft[field.dataset.macDimension==='width'?'macWidth':'macHeight']=value??'';
   $('#macSizeHint').textContent=macSizeHint();
  }else if(field.dataset.macStrength){
-  const lora=currentMacLoras().find(x=>x.id===field.dataset.macStrength);
-  if(lora&&value!=null)lora.strength=value;
+  const id=field.dataset.macStrength;
+  if(value!=null){
+   rememberMacLoraStrength(id,value);
+   const lora=currentMacLoras().find(x=>x.id===id);
+   if(lora)lora.strength=value;
+  }
  }else if(field.dataset.macOption){
   const options=draft.macOptions??={},key=field.dataset.macOption;
   if(value==null)delete options[key];
@@ -379,8 +389,8 @@ function macParamSheet(){
    const used=currentMacLoras().find(x=>x.id===lora.id);
    return '<div class="mac-lora"><label title="'+e(lora.name)+'"><input type="checkbox" data-mac-lora="'+e(lora.id)+'" '+
     (used?'checked':'')+'><span>'+e(lora.name)+'</span></label><input type="number" min="0" max="2" step="any" '+
-    'data-mac-strength="'+e(lora.id)+'" data-default-strength="'+e(lora.defaultStrength)+'" aria-label="'+e(lora.name)+' 强度" '+
-    'value="'+e(used?.strength??lora.defaultStrength)+'"'+(used?'':' disabled')+'></div>';
+    'data-mac-strength="'+e(lora.id)+'" data-default-strength="1" aria-label="'+e(lora.name)+' 强度" '+
+    'value="'+e(macLoraStrength(lora.id))+'"></div>';
   }).join('')+'</div>';
  return top+'<details class="mac-advanced"'+(draft.macAdvanced?' open':'')+'><summary>高级参数</summary>'+advanced+'</details>';
 }
@@ -523,9 +533,7 @@ function setupMask(canvas){
  if(!canvas||!maskEdit)return;
  const edit=maskEdit,source=edit.source,picture=new Image(),layer=document.createElement('canvas');
  const ctx=canvas.getContext('2d'),ink=layer.getContext('2d'),fingers=new Map();
- const toolbar=canvas.parentElement.querySelector('.mask-tools');
  let scale=1,dx=0,dy=0,stroke=null,mode='',scheduled=0,frame;
- let layoutWidth=0,layoutHeight=0;
  let total=edit.strokes.reduce((sum,s)=>sum+s.points.length,0);
  function render(){
   scheduled=0;
@@ -537,12 +545,6 @@ function setupMask(canvas){
    layer.width=canvas.width;layer.height=canvas.height;
   }
   const fit=Math.min(width/source.width,height/source.height);
-  if(width!==layoutWidth||height!==layoutHeight){
-   layoutWidth=width;layoutHeight=height;
-   const top=(height-source.height*fit)/2,right=(width-source.width*fit)/2;
-   toolbar.style.top=Math.min(top+8,Math.max(8,height-toolbar.offsetHeight-8))+'px';
-   toolbar.style.right=Math.min(right+8,Math.max(8,width-toolbar.offsetWidth-8))+'px';
-  }
   const w=source.width*fit*scale,h=source.height*fit*scale;
   dx=Math.max(-Math.max(0,(w-width)/2),Math.min(Math.max(0,(w-width)/2),dx));
   dy=Math.max(-Math.max(0,(h-height)/2),Math.min(Math.max(0,(h-height)/2),dy));

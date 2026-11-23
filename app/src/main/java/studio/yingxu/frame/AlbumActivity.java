@@ -9,6 +9,7 @@ import android.content.ClipData;
 import android.content.ContentUris;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.content.res.ColorStateList;
 import android.database.Cursor;
 import android.graphics.Bitmap;
 import android.content.SharedPreferences;
@@ -42,13 +43,17 @@ import android.widget.Button;
 import android.widget.FrameLayout;
 import android.widget.GridView;
 import android.widget.HorizontalScrollView;
+import android.widget.ImageButton;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.PopupWindow;
 import android.widget.TextView;
 import android.widget.Toast;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -79,6 +84,9 @@ public class AlbumActivity extends Activity {
     private final Map<String,Album> albums=new LinkedHashMap<>();
     private final List<Photo> allPhotos=new ArrayList<>();
     private final List<Photo> captures=new ArrayList<>();
+    private List<Photo> displayedPhotos=allPhotos;
+    private PhotoOrder photoOrder=PhotoOrder.ADDED;
+    private boolean sortAscending;
     private PickerOverlay overlay;
     private View backdrop;
     private LinearLayout root,tabs,footer;
@@ -89,6 +97,7 @@ public class AlbumActivity extends Activity {
     private ValueAnimator levelAnimation;
     private TextView heading,message;
     private Button back,access,photoTab,albumTab,preview,done;
+    private ImageButton sort;
     private PhotoAdapter adapter;
     private boolean albumsTab,stopped,loaded,queryFailed,finishedSelection;
     private String albumKey="";
@@ -104,7 +113,17 @@ public class AlbumActivity extends Activity {
     private static class Photo {
         final Uri uri;
         final String label;
-        Photo(Uri uri,String label){this.uri=uri;this.label=label;}
+        final long bytes,modified;
+        Photo(Uri uri,String label){this(uri,label,-1,-1);}
+        Photo(Uri uri,String label,long bytes,long modified){
+            this.uri=uri;this.label=label;this.bytes=bytes;this.modified=modified;
+        }
+    }
+    private enum PhotoOrder {
+        ADDED("添加时间"), MODIFIED("修改时间"), NAME("文件名"), SIZE("文件大小");
+
+        final String label;
+        PhotoOrder(String label){this.label=label;}
     }
     private static class Album {
         final String key,name;
@@ -143,6 +162,9 @@ public class AlbumActivity extends Activity {
         }else{
             albumsTab=state.getBoolean("albumsTab");
             albumKey=state.getString("albumKey","");
+            photoOrder=PhotoOrder.valueOf(state.getString("photoSortField",PhotoOrder.ADDED.name()));
+            sortAscending=state.getBoolean("photoSortAscending");
+            photoColumns=state.getInt("photoColumns",4);
             cameraUri=state.getParcelable("cameraUri");
             ArrayList<String> saved=state.getStringArrayList("selected");
             if(saved!=null)for(String value:saved)selected.add(Uri.parse(value));
@@ -164,6 +186,9 @@ public class AlbumActivity extends Activity {
         state.putStringArrayList("captures",captured);
         state.putBoolean("albumsTab",albumsTab);
         state.putString("albumKey",albumKey);
+        state.putString("photoSortField",photoOrder.name());
+        state.putBoolean("photoSortAscending",sortAscending);
+        state.putInt("photoColumns",photoColumns);
         state.putParcelable("cameraUri",cameraUri);
         super.onSaveInstanceState(state);
     }
@@ -222,6 +247,13 @@ public class AlbumActivity extends Activity {
             if(previewUri==null)accessAction();else toggleSelection(previewUri);
         });
         header.addView(access,new LinearLayout.LayoutParams(dp(58),dp(44)));
+        sort=new ImageButton(this);
+        sort.setContentDescription("图片排序");
+        sort.setImageResource(R.drawable.ic_sort);
+        sort.setOnClickListener(v->showSortMenu());
+        LinearLayout.LayoutParams sortSpace=new LinearLayout.LayoutParams(dp(44),dp(44));
+        sortSpace.leftMargin=dp(6);
+        header.addView(sort,sortSpace);
         root.addView(header);
 
         browser=new AlbumBrowser();
@@ -436,9 +468,68 @@ public class AlbumActivity extends Activity {
 
     private boolean inAlbumList(){return albumsTab&&albumKey.isEmpty();}
     private boolean cameraTile(){return !albumsTab;}
-    private List<Photo> visiblePhotos(){
+    private List<Photo> visiblePhotos(){return displayedPhotos;}
+    private void updatePhotoOrder(){
         Album album=albums.get(albumKey);
-        return albumsTab&&album!=null?album.photos:allPhotos;
+        List<Photo> photos=albumsTab&&album!=null?album.photos:allPhotos;
+        if(photoOrder==PhotoOrder.ADDED&&!sortAscending){displayedPhotos=photos;return;}
+        List<Photo> ordered=new ArrayList<>(photos);
+        switch(photoOrder){
+            case ADDED: Collections.reverse(ordered);break;
+            case MODIFIED: ordered.sort(Comparator.comparingLong(photo->numericSortKey(photo.modified)));break;
+            case NAME:
+                Comparator<Photo> name=Comparator.comparing(photo->photo.label==null?"":photo.label,String.CASE_INSENSITIVE_ORDER);
+                ordered.sort(sortAscending?name:name.reversed());
+                break;
+            case SIZE: ordered.sort(Comparator.comparingLong(photo->numericSortKey(photo.bytes)));break;
+        }
+        displayedPhotos=ordered;
+    }
+    private long numericSortKey(long value){
+        return value<0?Long.MAX_VALUE:sortAscending?value:-value;
+    }
+    private void showSortMenu(){
+        PopupWindow popup=new PopupWindow(buildSortOptions(),dp(172),ViewGroup.LayoutParams.WRAP_CONTENT,true);
+        GradientDrawable background=shape(PAPER,14);
+        background.setStroke(dp(1),0xffe3e0d7);
+        popup.setBackgroundDrawable(background);
+        popup.setElevation(dp(8));
+        popup.setOutsideTouchable(true);
+        popup.showAsDropDown(sort,0,dp(6),Gravity.END);
+    }
+    private LinearLayout buildSortOptions(){
+        LinearLayout options=new LinearLayout(this);
+        options.setOrientation(LinearLayout.VERTICAL);
+        options.setPadding(dp(6),dp(6),dp(6),dp(6));
+        options.setAccessibilityPaneTitle("图片排序");
+        for(PhotoOrder choice:PhotoOrder.values()){
+            Button option=control(choice.label,v->{
+                sortAscending=choice==photoOrder?!sortAscending:choice==PhotoOrder.NAME;
+                photoOrder=choice;
+                updatePhotoOrder();
+                updateCount();
+                grid.setSelection(0);
+                updateSortOptions(options);
+            });
+            option.setTextSize(15);
+            option.setGravity(Gravity.START|Gravity.CENTER_VERTICAL);
+            option.setPadding(dp(10),0,dp(10),0);
+            options.addView(option,new LinearLayout.LayoutParams(-1,dp(44)));
+        }
+        updateSortOptions(options);
+        return options;
+    }
+    private void updateSortOptions(LinearLayout options){
+        for(PhotoOrder choice:PhotoOrder.values()){
+            Button option=(Button)options.getChildAt(choice.ordinal());
+            boolean active=choice==photoOrder;
+            option.setSelected(active);
+            skin(option,active?PALE:Color.TRANSPARENT,active?CLAY:INK,9);
+            int arrow=active?(sortAscending?R.drawable.ic_sort_up:R.drawable.ic_sort_down):0;
+            option.setCompoundDrawablesRelativeWithIntrinsicBounds(0,0,arrow,0);
+            option.setCompoundDrawableTintList(ColorStateList.valueOf(CLAY));
+            option.setContentDescription(active?choice.label+(sortAscending?"，升序":"，降序"):choice.label);
+        }
     }
     private void openTab(boolean showAlbums){
         albumsTab=showAlbums;
@@ -489,12 +580,13 @@ public class AlbumActivity extends Activity {
     private void updateView(){
         boolean folder=albumsTab&&!albumKey.isEmpty();
         Album current=albums.get(albumKey);
+        updatePhotoOrder();
         back.setText(folder?"返回":"取消");
         heading.setText(current==null?(inAlbumList()?"本机相册":"参考图"):current.name);
         tabs.setVisibility(folder?View.GONE:View.VISIBLE);
         access.setText("权限");
         skin(access,NEUTRAL,INK,12);
-        access.setVisibility(fullAccess()?View.INVISIBLE:View.VISIBLE);
+        access.setVisibility(fullAccess()?(inAlbumList()?View.INVISIBLE:View.GONE):View.VISIBLE);
         skin(photoTab,!albumsTab?PALE:NEUTRAL,!albumsTab?CLAY:INK,10);
         skin(albumTab,albumsTab?PALE:NEUTRAL,albumsTab?CLAY:INK,10);
 
@@ -514,6 +606,10 @@ public class AlbumActivity extends Activity {
     private void updateCount(){
         int count=selected.size();
         boolean viewing=previewUri!=null;
+        sort.setVisibility(viewing||inAlbumList()?View.GONE:View.VISIBLE);
+        boolean defaultSort=photoOrder==PhotoOrder.ADDED&&!sortAscending;
+        sort.setBackground(shape(defaultSort?NEUTRAL:PALE,12));
+        sort.setColorFilter(defaultSort?INK:CLAY);
         preview.setText(viewing?"继续选择":"预览 ("+count+"/"+limit+")");
         preview.setEnabled(viewing||count>0);
         skin(preview,NEUTRAL,viewing||count>0?INK:MUTED,12);
@@ -742,14 +838,16 @@ public class AlbumActivity extends Activity {
             List<Photo> images=new ArrayList<>();
             Uri collection=MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL);
             String[] columns={MediaStore.Images.Media._ID,MediaStore.Images.Media.BUCKET_DISPLAY_NAME,MediaStore.Images.Media.DISPLAY_NAME,
-                MediaStore.Images.Media.BUCKET_ID,MediaStore.Images.Media.VOLUME_NAME};
+                MediaStore.Images.Media.BUCKET_ID,MediaStore.Images.Media.VOLUME_NAME,MediaStore.Images.Media.SIZE,
+                MediaStore.Images.Media.DATE_MODIFIED};
             boolean failed=false;
             try(Cursor cursor=getContentResolver().query(collection,columns,null,null,
                 MediaStore.Images.Media.DATE_ADDED+" DESC, "+MediaStore.Images.Media._ID+" DESC")){
                 while(cursor!=null&&cursor.moveToNext()&&!Thread.currentThread().isInterrupted()){
                     String volume=cursor.getString(4);
                     Uri media=volume==null?collection:MediaStore.Images.Media.getContentUri(volume);
-                    Photo photo=new Photo(ContentUris.withAppendedId(media,cursor.getLong(0)),cursor.getString(2));
+                    Photo photo=new Photo(ContentUris.withAppendedId(media,cursor.getLong(0)),cursor.getString(2),
+                        cursor.isNull(5)?-1:cursor.getLong(5),cursor.isNull(6)||cursor.getLong(6)<=0?-1:cursor.getLong(6));
                     images.add(photo);
                     String name=cursor.getString(1);
                     if(name!=null&&!name.isEmpty()){

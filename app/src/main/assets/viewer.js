@@ -1,12 +1,12 @@
 'use strict';
 
-function imageViewer(src,description,neighbors,actions='') {
+function imageViewer(src,description,neighbors) {
  const previous=neighbors&&neighbors.previous;
  const next=neighbors&&neighbors.next;
  const slide=(file,side)=>file?'<img class="viewer-neighbor '+side+'" src="images/'+e(file)+'.thumb" alt="" aria-hidden="true" draggable="false">':'';
  return '<div class="viewer-frame"><div class="viewer'+(neighbors?' viewer-near-fit':'')+'" tabindex="0" aria-label="'+e(description)+'，支持双指缩放和拖动">'+
   '<img class="viewer-current" src="'+e(src)+'" alt="'+e(description)+'" draggable="false">'+
-  slide(previous,'previous')+slide(next,'next')+'</div>'+actions+'</div>';
+  slide(previous,'previous')+slide(next,'next')+'</div></div>';
 }
 
 function setupViewer(viewport,onSwipe) {
@@ -23,14 +23,15 @@ function setupViewer(viewport,onSwipe) {
  const points=new Map();
  const nearFit=()=>onSwipe&&scale<=1.15;
  let scale=1,x=0,y=0,swipe=null,settling=false,travel=0;
- function render() {
+ function render(preservePan=false) {
   const width=viewport.clientWidth,height=viewport.clientHeight;
   const fit=Math.min(width/(image.naturalWidth||width||1),height/(image.naturalHeight||height||1));
   const maxX=Math.max(0,((image.naturalWidth||width)*fit*scale-width)/2);
   const maxY=Math.max(0,((image.naturalHeight||height)*fit*scale-height)/2);
-  x=Math.max(-maxX,Math.min(maxX,x));y=Math.max(-maxY,Math.min(maxY,y));
+  const visibleX=Math.max(-maxX,Math.min(maxX,x)),visibleY=Math.max(-maxY,Math.min(maxY,y));
+  if(!preservePan){x=visibleX;y=visibleY;}
   viewport.classList.toggle('viewer-near-fit',!!nearFit());
-  image.style.transform='translate('+(x+travel)+'px,'+y+'px) scale('+scale+')';
+  image.style.transform='translate('+(visibleX+travel)+'px,'+visibleY+'px) scale('+scale+')';
   for(const direction of [-1,1]) {
    const neighbor=neighbors[direction];
    if(neighbor)neighbor.style.transform='translateX('+(direction*(width+8)+travel)+'px)';
@@ -125,6 +126,6 @@ function setupViewer(viewport,onSwipe) {
    swipe=null;
    if(travel)settle(0);
   });
- image.addEventListener('load',render);
+ image.addEventListener('load',()=>render(true));
  render();
 }
